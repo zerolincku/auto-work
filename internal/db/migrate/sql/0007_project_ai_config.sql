@@ -1,0 +1,2 @@
+ALTER TABLE projects ADD COLUMN default_provider TEXT NOT NULL DEFAULT 'claude';
+ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT '';
