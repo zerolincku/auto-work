@@ -81,6 +81,7 @@
 
 .app-page {
   min-height: 100vh;
+  box-sizing: border-box;
   padding: var(--page-padding);
   color: var(--ink);
   background:
@@ -2322,4 +2323,3 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
-
