@@ -36,9 +36,31 @@ func (r *ProjectRepository) Create(ctx context.Context, p *domain.Project) error
 	p.UpdatedAt = now
 
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO projects (id, name, path, default_provider, model, system_prompt, failure_policy, auto_dispatch_enabled, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Path, p.DefaultProvider, p.Model, p.SystemPrompt, p.FailurePolicy, boolToInt(p.AutoDispatchEnabled), p.CreatedAt, p.UpdatedAt,
+INSERT INTO projects (
+	id,
+	name,
+	path,
+	default_provider,
+	model,
+	system_prompt,
+	failure_policy,
+	auto_dispatch_enabled,
+	frontend_screenshot_report_enabled,
+	created_at,
+	updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID,
+		p.Name,
+		p.Path,
+		p.DefaultProvider,
+		p.Model,
+		p.SystemPrompt,
+		p.FailurePolicy,
+		boolToInt(p.AutoDispatchEnabled),
+		boolToInt(p.FrontendScreenshotReportEnabled),
+		p.CreatedAt,
+		p.UpdatedAt,
 	)
 	return err
 }
@@ -48,7 +70,7 @@ func (r *ProjectRepository) List(ctx context.Context, limit int) ([]domain.Proje
 		limit = 200
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, name, path, default_provider, model, system_prompt, failure_policy, auto_dispatch_enabled, created_at, updated_at
+SELECT id, name, path, default_provider, model, system_prompt, failure_policy, auto_dispatch_enabled, frontend_screenshot_report_enabled, created_at, updated_at
 FROM projects
 ORDER BY created_at DESC
 LIMIT ?`, limit)
@@ -61,7 +83,8 @@ LIMIT ?`, limit)
 	for rows.Next() {
 		var p domain.Project
 		var autoDispatch int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.DefaultProvider, &p.Model, &p.SystemPrompt, &p.FailurePolicy, &autoDispatch, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var frontendScreenshotReport int
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.DefaultProvider, &p.Model, &p.SystemPrompt, &p.FailurePolicy, &autoDispatch, &frontendScreenshotReport, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if p.DefaultProvider == "" {
@@ -71,6 +94,7 @@ LIMIT ?`, limit)
 			p.FailurePolicy = domain.ProjectFailurePolicyBlock
 		}
 		p.AutoDispatchEnabled = autoDispatch == 1
+		p.FrontendScreenshotReportEnabled = frontendScreenshotReport == 1
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -78,12 +102,13 @@ LIMIT ?`, limit)
 
 func (r *ProjectRepository) GetByID(ctx context.Context, id string) (*domain.Project, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, name, path, default_provider, model, system_prompt, failure_policy, auto_dispatch_enabled, created_at, updated_at
+SELECT id, name, path, default_provider, model, system_prompt, failure_policy, auto_dispatch_enabled, frontend_screenshot_report_enabled, created_at, updated_at
 FROM projects
 WHERE id = ?`, id)
 	var p domain.Project
 	var autoDispatch int
-	if err := row.Scan(&p.ID, &p.Name, &p.Path, &p.DefaultProvider, &p.Model, &p.SystemPrompt, &p.FailurePolicy, &autoDispatch, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	var frontendScreenshotReport int
+	if err := row.Scan(&p.ID, &p.Name, &p.Path, &p.DefaultProvider, &p.Model, &p.SystemPrompt, &p.FailurePolicy, &autoDispatch, &frontendScreenshotReport, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrProjectNotFound
 		}
@@ -96,6 +121,7 @@ WHERE id = ?`, id)
 		p.FailurePolicy = domain.ProjectFailurePolicyBlock
 	}
 	p.AutoDispatchEnabled = autoDispatch == 1
+	p.FrontendScreenshotReportEnabled = frontendScreenshotReport == 1
 	return &p, nil
 }
 
@@ -191,7 +217,12 @@ WHERE id = ?`, defaultProvider, model, systemPrompt, failurePolicy, time.Now().U
 	return nil
 }
 
-func (r *ProjectRepository) Update(ctx context.Context, id, name, defaultProvider, model, systemPrompt string, failurePolicy domain.ProjectFailurePolicy) error {
+func (r *ProjectRepository) Update(
+	ctx context.Context,
+	id, name, defaultProvider, model, systemPrompt string,
+	failurePolicy domain.ProjectFailurePolicy,
+	frontendScreenshotReportEnabled bool,
+) error {
 	defaultProvider = strings.TrimSpace(defaultProvider)
 	model = strings.TrimSpace(model)
 	systemPrompt = strings.TrimSpace(systemPrompt)
@@ -203,8 +234,8 @@ func (r *ProjectRepository) Update(ctx context.Context, id, name, defaultProvide
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE projects
-SET name = ?, default_provider = ?, model = ?, system_prompt = ?, failure_policy = ?, updated_at = ?
-WHERE id = ?`, strings.TrimSpace(name), defaultProvider, model, systemPrompt, failurePolicy, time.Now().UTC(), id)
+SET name = ?, default_provider = ?, model = ?, system_prompt = ?, failure_policy = ?, frontend_screenshot_report_enabled = ?, updated_at = ?
+WHERE id = ?`, strings.TrimSpace(name), defaultProvider, model, systemPrompt, failurePolicy, boolToInt(frontendScreenshotReportEnabled), time.Now().UTC(), id)
 	if err != nil {
 		return err
 	}

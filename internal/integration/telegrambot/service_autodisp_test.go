@@ -6,13 +6,25 @@ import (
 	"testing"
 )
 
-func TestHandleSetAutoDispatch_EnableByProjectID(t *testing.T) {
+func TestParseAutoDispatchArgs(t *testing.T) {
+	t.Parallel()
+
+	projectSelector, enabled, err := parseAutoDispatchArgs("项目1 | on")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if projectSelector != "项目1" || !enabled {
+		t.Fatalf("unexpected parsed values: %q %v", projectSelector, enabled)
+	}
+}
+
+func TestHandleAutoDispatch_EnableByProjectID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, _, projectID := setupAddTaskServiceFixture(t, ctx, 1)
 
-	msg := svc.handleSetAutoDispatch(ctx, projectID, true)
+	msg := svc.handleAutoDispatch(ctx, projectID+" | on")
 	if !strings.Contains(msg, "已开启项目自动派发") {
 		t.Fatalf("unexpected response: %s", msg)
 	}
@@ -25,7 +37,7 @@ func TestHandleSetAutoDispatch_EnableByProjectID(t *testing.T) {
 	}
 }
 
-func TestHandleSetAutoDispatch_DisableByProjectName(t *testing.T) {
+func TestHandleAutoDispatch_DisableByProjectName(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -34,7 +46,7 @@ func TestHandleSetAutoDispatch_DisableByProjectName(t *testing.T) {
 		t.Fatalf("seed auto dispatch enabled: %v", err)
 	}
 
-	msg := svc.handleSetAutoDispatch(ctx, "项目1", false)
+	msg := svc.handleAutoDispatch(ctx, "项目1 | off")
 	if !strings.Contains(msg, "已关闭项目自动派发") {
 		t.Fatalf("unexpected response: %s", msg)
 	}
@@ -47,29 +59,25 @@ func TestHandleSetAutoDispatch_DisableByProjectName(t *testing.T) {
 	}
 }
 
-func TestHandleSetAutoDispatch_MissingSelector(t *testing.T) {
+func TestHandleAutoDispatch_InvalidUsage(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, _, _ := setupAddTaskServiceFixture(t, ctx, 1)
 
-	onMsg := svc.handleSetAutoDispatch(ctx, "", true)
-	if !strings.Contains(onMsg, "/autodisp_on <项目ID或项目名>") {
-		t.Fatalf("unexpected on usage response: %s", onMsg)
-	}
-	offMsg := svc.handleSetAutoDispatch(ctx, "", false)
-	if !strings.Contains(offMsg, "/autodisp_off <项目ID或项目名>") {
-		t.Fatalf("unexpected off usage response: %s", offMsg)
+	msg := svc.handleAutoDispatch(ctx, "项目1")
+	if !strings.Contains(msg, "/autodisp <项目ID或项目名> | on|off") {
+		t.Fatalf("unexpected usage response: %s", msg)
 	}
 }
 
-func TestHandleSetAutoDispatch_UnknownProject(t *testing.T) {
+func TestHandleAutoDispatch_UnknownProject(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, _, _ := setupAddTaskServiceFixture(t, ctx, 1)
 
-	msg := svc.handleSetAutoDispatch(ctx, "not-exists", true)
+	msg := svc.handleAutoDispatch(ctx, "not-exists | on")
 	if !strings.Contains(msg, "设置自动派发失败") || !strings.Contains(msg, "未找到项目") {
 		t.Fatalf("unexpected response: %s", msg)
 	}

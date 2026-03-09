@@ -28,7 +28,6 @@ type Config struct {
 	RunCodexOnDispatch   bool
 	EnableMCPCallback    bool
 	RequireMCPCallback   bool
-	MCPTransport         string
 	MCPHTTPURL           string
 	TelegramEnabled      bool
 	TelegramBotToken     string
@@ -74,13 +73,6 @@ func Load() Config {
 
 	enableMCPCallback := os.Getenv("AUTO_WORK_ENABLE_MCP_CALLBACK") != "0"
 	requireMCPCallback := os.Getenv("AUTO_WORK_REQUIRE_MCP_CALLBACK") != "0"
-	mcpTransport := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_WORK_MCP_TRANSPORT")))
-	switch mcpTransport {
-	case "", "http":
-		mcpTransport = "http"
-	default:
-		mcpTransport = "http"
-	}
 	mcpHTTPURL := strings.TrimSpace(os.Getenv("AUTO_WORK_MCP_HTTP_URL"))
 	if mcpHTTPURL == "" {
 		mcpHTTPURL = defaultMCPHTTPURL
@@ -125,7 +117,6 @@ func Load() Config {
 		RunCodexOnDispatch:   runCodexOnDispatch,
 		EnableMCPCallback:    enableMCPCallback,
 		RequireMCPCallback:   requireMCPCallback,
-		MCPTransport:         mcpTransport,
 		MCPHTTPURL:           mcpHTTPURL,
 		TelegramEnabled:      telegramEnabled(token),
 		TelegramBotToken:     token,

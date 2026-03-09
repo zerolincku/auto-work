@@ -224,9 +224,9 @@ func (s *Service) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 	switch cmd {
 	case "start", "help":
 		response = helpText()
-	case "addproject", "newproject":
+	case "addproject":
 		response = s.handleCreateProject(ctx, args)
-	case "setprovider", "provider":
+	case "setprovider":
 		response = s.handleSetProjectProvider(ctx, args)
 	case "projects":
 		response = s.handleProjects(ctx, args)
@@ -234,23 +234,21 @@ func (s *Service) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 		response = s.handleProject(ctx, args)
 	case "recent":
 		response = s.handleRecent(ctx, args)
-	case "pending", "queue":
+	case "pending":
 		response = s.handlePending(ctx, args)
 	case "failed":
 		response = s.handleFailed(ctx, args)
 	case "running":
 		response = s.handleRunning(ctx, args)
-	case "autodisp_on":
-		response = s.handleSetAutoDispatch(ctx, args, true)
-	case "autodisp_off":
-		response = s.handleSetAutoDispatch(ctx, args, false)
-	case "task", "status":
+	case "autodisp":
+		response = s.handleAutoDispatch(ctx, args)
+	case "task":
 		response = s.handleTaskStatus(ctx, args)
 	case "logs":
 		response = s.handleLogs(ctx, args)
-	case "tasklogs", "latestlogs":
+	case "tasklogs":
 		response = s.handleTaskLatestLogs(ctx, args)
-	case "addtask", "newtask":
+	case "addtask":
 		response = s.handleCreateTask(ctx, args)
 	case "dispatch":
 		response = s.handleDispatchTask(ctx, args)
@@ -581,7 +579,7 @@ func (s *Service) handleSetProjectProvider(ctx context.Context, args string) str
 func (s *Service) handleTaskStatus(ctx context.Context, args string) string {
 	taskID := strings.TrimSpace(args)
 	if taskID == "" {
-		return "用法: /task <task_id> 或 /status <task_id>"
+		return "用法: /task <task_id>"
 	}
 	task, err := s.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
@@ -861,7 +859,7 @@ func (s *Service) renderRunLogs(ctx context.Context, targetID, runID string, fro
 }
 
 func (s *Service) handleCreateTask(ctx context.Context, args string) string {
-	projectSelector, title, desc, _, _, err := parseAddTaskArgs(args)
+	projectSelector, title, desc, err := parseAddTaskArgs(args)
 	if err != nil {
 		return err.Error()
 	}
@@ -881,7 +879,6 @@ func (s *Service) handleCreateTask(ctx context.Context, args string) string {
 		Description: desc,
 		Priority:    priority,
 		Status:      domain.TaskPending,
-		DependsOn:   []string{},
 		Provider:    "",
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -901,15 +898,15 @@ func (s *Service) handleCreateTask(ctx context.Context, args string) string {
 	))
 }
 
-func (s *Service) handleSetAutoDispatch(ctx context.Context, args string, enabled bool) string {
-	selector := strings.TrimSpace(args)
-	if selector == "" {
-		if enabled {
-			return "用法: /autodisp_on <项目ID或项目名>"
-		}
-		return "用法: /autodisp_off <项目ID或项目名>"
+func (s *Service) handleAutoDispatch(ctx context.Context, args string) string {
+	selector, enabled, err := parseAutoDispatchArgs(args)
+	if err != nil {
+		return err.Error()
 	}
+	return s.setProjectAutoDispatch(ctx, selector, enabled)
+}
 
+func (s *Service) setProjectAutoDispatch(ctx context.Context, selector string, enabled bool) string {
 	project, err := s.resolveProjectForCreateTask(ctx, selector)
 	if err != nil {
 		return fmt.Sprintf("设置自动派发失败: %v", err)
@@ -946,43 +943,33 @@ func (s *Service) handleSetAutoDispatch(ctx context.Context, args string, enable
 	))
 }
 
-func parseAddTaskArgs(raw string) (projectSelector string, title string, desc string, provider string, providerSpecified bool, err error) {
+func parseAddTaskArgs(raw string) (projectSelector string, title string, desc string, err error) {
 	parts := splitPipedArgs(raw)
 	if len(parts) < 2 {
-		return "", "", "", "", false, errors.New(addTaskUsage())
+		return "", "", "", errors.New(addTaskUsage())
 	}
 
-	provider = ""
-	if len(parts) >= 3 {
-		candidateProvider := strings.ToLower(strings.TrimSpace(parts[len(parts)-1]))
-		if candidateProvider == "claude" || candidateProvider == "codex" {
-			provider = candidateProvider
-			providerSpecified = true
-			parts = parts[:len(parts)-1]
-		}
-	}
-
-	if len(parts) == 3 && strings.HasPrefix(strings.ToLower(parts[0]), "p:") {
-		projectSelector = strings.TrimSpace(parts[0][2:])
+	if len(parts) == 3 {
+		projectSelector = strings.TrimSpace(parts[0])
 		parts = parts[1:]
 	}
 
 	if len(parts) != 2 {
-		return "", "", "", "", false, errors.New(addTaskUsage())
+		return "", "", "", errors.New(addTaskUsage())
 	}
 
 	title = strings.TrimSpace(parts[0])
 	desc = strings.TrimSpace(parts[1])
 	if title == "" || desc == "" {
-		return "", "", "", "", false, errors.New(addTaskUsage())
+		return "", "", "", errors.New(addTaskUsage())
 	}
 	if len([]rune(title)) > 200 {
-		return "", "", "", "", false, errors.New("创建任务失败: 标题过长（最多 200 字符）")
+		return "", "", "", errors.New("创建任务失败: 标题过长（最多 200 字符）")
 	}
 	if len([]rune(desc)) > 4000 {
-		return "", "", "", "", false, errors.New("创建任务失败: 描述过长（最多 4000 字符）")
+		return "", "", "", errors.New("创建任务失败: 描述过长（最多 4000 字符）")
 	}
-	return projectSelector, title, desc, provider, providerSpecified, nil
+	return projectSelector, title, desc, nil
 }
 
 func parseAddProjectArgs(raw string) (name string, path string, provider string, failurePolicy string, err error) {
@@ -1024,6 +1011,27 @@ func parseSetProviderArgs(raw string) (projectSelector string, provider string, 
 		return "", "", errors.New(setProviderUsage())
 	}
 	return projectSelector, provider, nil
+}
+
+func parseAutoDispatchArgs(raw string) (projectSelector string, enabled bool, err error) {
+	parts := splitPipedArgs(raw)
+	if len(parts) != 2 {
+		return "", false, errors.New(autoDispatchUsage())
+	}
+
+	projectSelector = strings.TrimSpace(parts[0])
+	if projectSelector == "" {
+		return "", false, errors.New(autoDispatchUsage())
+	}
+
+	switch strings.ToLower(strings.TrimSpace(parts[1])) {
+	case "on":
+		return projectSelector, true, nil
+	case "off":
+		return projectSelector, false, nil
+	default:
+		return "", false, errors.New(autoDispatchUsage())
+	}
 }
 
 func splitPipedArgs(raw string) []string {
@@ -1105,17 +1113,17 @@ func projectChoices(projects []domain.Project, max int) string {
 
 func addTaskUsage() string {
 	return strings.TrimSpace(`用法:
-/addtask <标题> | <描述> [| claude|codex]
-/addtask p:<项目ID或项目名> | <标题> | <描述> [| claude|codex]
+/addtask <标题> | <描述>
+/addtask <项目ID或项目名> | <标题> | <描述>
+说明: 执行时统一按项目默认 Provider 派发，无需在命令里填写 Provider。
 示例:
 /addtask 修复登录超时 | 排查 timeout 根因并补测试
-/addtask p:proj-123 | 新增健康检查接口 | 增加 /healthz 与单测 | claude`)
+/addtask proj-123 | 新增健康检查接口 | 增加 /healthz 与单测`)
 }
 
 func addProjectUsage() string {
 	return strings.TrimSpace(`用法:
 /addproject <项目名称> | <项目路径> [| claude|codex] [| block|continue]
-/newproject <项目名称> | <项目路径> [| claude|codex] [| block|continue]
 示例:
 /addproject 支付系统 | /srv/payments
 /addproject 自动工作台 | /Users/me/work/auto-work | codex | continue`)
@@ -1124,10 +1132,15 @@ func addProjectUsage() string {
 func setProviderUsage() string {
 	return strings.TrimSpace(`用法:
 /setprovider <项目ID或项目名> | <claude|codex>
-/provider <项目ID或项目名> | <claude|codex>
 示例:
-/setprovider 支付系统 | codex
-/provider proj-123 | claude`)
+/setprovider 支付系统 | codex`)
+}
+
+func autoDispatchUsage() string {
+	return strings.TrimSpace(`用法:
+/autodisp <项目ID或项目名> | on|off
+示例:
+/autodisp 支付系统 | on`)
 }
 
 func (s *Service) resolveRunID(ctx context.Context, target string) (runID string, fromTask bool, err error) {
@@ -1364,26 +1377,21 @@ func helpText() string {
 	return strings.TrimSpace(`
 可用指令：
 /help
-/addproject ...                创建项目
-/newproject ...                同 /addproject
-/setprovider ...               修改项目默认 Provider
-/provider ...                  同 /setprovider
-/projects [n]                 查看项目列表与 AI 配置摘要
+/addproject <项目名称> | <项目路径> [| claude|codex] [| block|continue]
+/setprovider <项目ID或项目名> | <claude|codex>
+/autodisp <项目ID或项目名> | on|off
+/projects [n]                 查看项目列表
 /project <项目ID或项目名>       查看单个项目详情
+/addtask <标题> | <描述>
+/addtask <项目ID或项目名> | <标题> | <描述>
+/dispatch <task_id>           派发指定任务
 /recent [n]                   查看最近执行中或已完成任务
 /pending [项目ID或项目名] [n]  查看待执行任务队列
-/queue [项目ID或项目名] [n]    同 /pending
 /failed [项目ID或项目名] [n]   查看失败/阻塞任务
 /running [项目ID或项目名] [n]  查看运行中的任务
-/dispatch <task_id>           派发指定任务
-/autodisp_on <项目ID或项目名>   开启指定项目自动派发
-/autodisp_off <项目ID或项目名>  关闭指定项目自动派发
-/task <task_id>               查看任务详情与最新运行状态
-/status <task_id>             同 /task
+/task <task_id>               查看任务详情
 /logs <run_id|task_id> [n]    查看缩略日志（默认20条）
 /tasklogs <task_id> [n]       查看任务最新一次运行日志
-/latestlogs <task_id> [n]     同 /tasklogs
-/addtask ...                  创建任务（自动分配优先级，详见用法）
 `)
 }
 
@@ -1413,7 +1421,7 @@ func startupNotifyTargets(allowed map[int64]struct{}) []int64 {
 
 func startupNotifyMessage(now time.Time) string {
 	return fmt.Sprintf(
-		"自动工作台已启动。\n时间: %s\n你可以发送 /help 查看可用命令。",
+		"自动工作台已启动。\n时间: %s\n你可以发送 /help 查看可用指令。",
 		now.Local().Format("2006-01-02 15:04:05"),
 	)
 }

@@ -3,7 +3,6 @@
 ## 1. 功能验收
 
 - 可以创建任务（title/description/priority）。
-- 任务支持依赖关系；依赖未完成时不会被调度。
 - 调度器按优先级自动派发空闲 agent。
 - 同一 agent 同时仅 1 个 running run。
 - Claude Runner 可启动并完成一次 headless 执行。

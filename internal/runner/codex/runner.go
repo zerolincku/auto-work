@@ -29,7 +29,6 @@ type Options struct {
 	DebugDir          string
 	ExtraArgs         []string
 	EnableMCPCallback bool
-	MCPTransport      string
 	MCPHTTPURL        string
 	OnLine            func(runID, stream, line string)
 	OnExit            func(runID string, exitCode int, runErr error)
@@ -234,23 +233,11 @@ func (r *Runner) waitExit(runID string, cmd *exec.Cmd) {
 }
 
 func (r *Runner) appendMCPConfigOverrides(args *[]string, run domain.Run, task domain.Task) error {
-	transport := strings.ToLower(strings.TrimSpace(r.opts.MCPTransport))
-	if transport == "" || transport != "http" {
-		transport = "http"
+	url, err := mcpcallback.BuildRunScopedURL(r.opts.MCPHTTPURL, run.ID, task.ID)
+	if err != nil {
+		return fmt.Errorf("mcp http config invalid: %w", err)
 	}
-
-	overrides := make([]string, 0, 1)
-	switch transport {
-	case "http":
-		url, err := mcpcallback.BuildRunScopedURL(r.opts.MCPHTTPURL, run.ID, task.ID)
-		if err != nil {
-			return fmt.Errorf("mcp http transport config invalid: %w", err)
-		}
-		overrides = append(overrides, fmt.Sprintf(`mcp_servers.auto-work.url=%s`, strconv.Quote(url)))
-	default:
-		return fmt.Errorf("unsupported mcp transport: %s", transport)
-	}
-
+	overrides := []string{fmt.Sprintf(`mcp_servers.auto-work.url=%s`, strconv.Quote(url))}
 	for _, item := range overrides {
 		*args = append(*args, "-c", item)
 	}

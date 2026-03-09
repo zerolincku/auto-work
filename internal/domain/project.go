@@ -10,14 +10,15 @@ const (
 )
 
 type Project struct {
-	ID                  string
-	Name                string
-	Path                string
-	DefaultProvider     string
-	Model               string
-	SystemPrompt        string
-	FailurePolicy       ProjectFailurePolicy
-	AutoDispatchEnabled bool
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                              string
+	Name                            string
+	Path                            string
+	DefaultProvider                 string
+	Model                           string
+	SystemPrompt                    string
+	FailurePolicy                   ProjectFailurePolicy
+	AutoDispatchEnabled             bool
+	FrontendScreenshotReportEnabled bool
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }

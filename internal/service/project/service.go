@@ -20,12 +20,13 @@ type Service struct {
 }
 
 type CreateProjectInput struct {
-	Name            string
-	Path            string
-	DefaultProvider string
-	Model           string
-	SystemPrompt    string
-	FailurePolicy   string
+	Name                            string
+	Path                            string
+	DefaultProvider                 string
+	Model                           string
+	SystemPrompt                    string
+	FailurePolicy                   string
+	FrontendScreenshotReportEnabled bool
 }
 
 type UpdateProjectAIInput struct {
@@ -37,12 +38,13 @@ type UpdateProjectAIInput struct {
 }
 
 type UpdateProjectInput struct {
-	ProjectID       string
-	Name            string
-	DefaultProvider string
-	Model           string
-	SystemPrompt    string
-	FailurePolicy   string
+	ProjectID                       string
+	Name                            string
+	DefaultProvider                 string
+	Model                           string
+	SystemPrompt                    string
+	FailurePolicy                   string
+	FrontendScreenshotReportEnabled bool
 }
 
 func NewService(repo *repository.ProjectRepository) *Service {
@@ -66,16 +68,17 @@ func (s *Service) Create(ctx context.Context, in CreateProjectInput) (*domain.Pr
 
 	now := time.Now().UTC()
 	p := &domain.Project{
-		ID:                  uuid.NewString(),
-		Name:                name,
-		Path:                filepath.Clean(path),
-		DefaultProvider:     defaultProvider,
-		Model:               strings.TrimSpace(in.Model),
-		SystemPrompt:        strings.TrimSpace(in.SystemPrompt),
-		FailurePolicy:       failurePolicy,
-		AutoDispatchEnabled: false,
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ID:                              uuid.NewString(),
+		Name:                            name,
+		Path:                            filepath.Clean(path),
+		DefaultProvider:                 defaultProvider,
+		Model:                           strings.TrimSpace(in.Model),
+		SystemPrompt:                    strings.TrimSpace(in.SystemPrompt),
+		FailurePolicy:                   failurePolicy,
+		AutoDispatchEnabled:             false,
+		FrontendScreenshotReportEnabled: in.FrontendScreenshotReportEnabled,
+		CreatedAt:                       now,
+		UpdatedAt:                       now,
 	}
 	if err := s.repo.Create(ctx, p); err != nil {
 		return nil, err
@@ -120,7 +123,16 @@ func (s *Service) Update(ctx context.Context, in UpdateProjectInput) (*domain.Pr
 	if !ok {
 		return nil, ErrInvalidInput
 	}
-	if err := s.repo.Update(ctx, projectID, name, defaultProvider, strings.TrimSpace(in.Model), strings.TrimSpace(in.SystemPrompt), failurePolicy); err != nil {
+	if err := s.repo.Update(
+		ctx,
+		projectID,
+		name,
+		defaultProvider,
+		strings.TrimSpace(in.Model),
+		strings.TrimSpace(in.SystemPrompt),
+		failurePolicy,
+		in.FrontendScreenshotReportEnabled,
+	); err != nil {
 		return nil, err
 	}
 	return s.repo.GetByID(ctx, projectID)

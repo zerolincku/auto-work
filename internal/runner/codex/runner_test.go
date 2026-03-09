@@ -7,7 +7,7 @@ import (
 	"auto-work/internal/domain"
 )
 
-func TestAppendMCPConfigOverrides_DefaultsToHTTP(t *testing.T) {
+func TestAppendMCPConfigOverrides(t *testing.T) {
 	t.Parallel()
 
 	r := New(Options{
@@ -26,32 +26,6 @@ func TestAppendMCPConfigOverrides_DefaultsToHTTP(t *testing.T) {
 	}
 	if strings.Contains(args[1], `mcp_servers."auto-work".`) {
 		t.Fatalf("server name should not include quotes: %q", args[1])
-	}
-	if !strings.HasPrefix(args[1], "mcp_servers.auto-work.url=") {
-		t.Fatalf("missing url override, got %q", args[1])
-	}
-	if !strings.Contains(args[1], "run_id=run-1") || !strings.Contains(args[1], "task_id=task-1") {
-		t.Fatalf("url override missing run/task query: %q", args[1])
-	}
-}
-
-func TestAppendMCPConfigOverrides_HTTPTransport(t *testing.T) {
-	t.Parallel()
-
-	r := New(Options{
-		MCPTransport: "http",
-		MCPHTTPURL:   "http://127.0.0.1:38080/mcp",
-	})
-	args := []string{}
-	err := r.appendMCPConfigOverrides(&args, domain.Run{ID: "run-1"}, domain.Task{ID: "task-1"})
-	if err != nil {
-		t.Fatalf("append overrides: %v", err)
-	}
-	if len(args) != 2 {
-		t.Fatalf("unexpected args len: %d", len(args))
-	}
-	if args[0] != "-c" {
-		t.Fatalf("expected -c at 0, got %q", args[0])
 	}
 	if !strings.HasPrefix(args[1], "mcp_servers.auto-work.url=") {
 		t.Fatalf("missing url override, got %q", args[1])

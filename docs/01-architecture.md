@@ -35,7 +35,7 @@ Wails Desktop App
 ## 3. 核心模块设计
 
 ### 3.1 Task Service
-- 职责：任务 CRUD、优先级、依赖、状态迁移校验。
+- 职责：任务 CRUD、优先级、状态迁移校验。
 - 输入：UI 请求、Scheduler 派发请求、MCP 回调。
 - 输出：任务状态、可执行任务列表。
 
@@ -45,7 +45,7 @@ Wails Desktop App
 - 每个 agent 并发度默认 1。
 - 若存在 `running` 且 heartbeat 未超时，跳过该 agent。
 - 若空闲，按规则选取下一个可执行任务并 claim。
-- 规则（建议顺序）：`priority DESC -> created_at ASC`，并过滤依赖未完成任务。
+- 规则（建议顺序）：`priority DESC -> created_at ASC`。
 
 ### 3.3 Runner Manager
 - 职责：创建 run、拉起 CLI 子进程、维护 pid 与 heartbeat、收集 stdout/stderr。
@@ -54,10 +54,12 @@ Wails Desktop App
 - `CodexRunner`：`codex exec --json ...`，并在启动参数注入 MCP URL。
 
 ### 3.4 MCP Server
-- Transport：同进程 `HTTP`（默认）。
+- 形态：同进程 `HTTP` MCP 服务。
 - 工具：
 - `auto-work.report_result`：完成态上报。
-- `auto-work.create_tasks`：批量创建后续任务（当前项目队尾追加）。
+- `auto-work.create_tasks`：批量创建后续任务，可队尾追加或插入到指定任务之后。
+- `auto-work.update_task`：修改任务内容，并可调整到指定任务之后。
+- `auto-work.delete_task`：删除任务，并自动收拢后续优先级。
 - `auto-work.list_pending_tasks`：查询当前项目 `pending` 任务。
 - `auto-work.list_history_tasks`：查询当前项目历史任务（`done/failed/blocked`）。
 - `auto-work.get_task_detail`：查询任务详情（含最近运行记录）。
@@ -80,7 +82,6 @@ title TEXT NOT NULL
 description TEXT NOT NULL
 priority INTEGER NOT NULL DEFAULT 100
 status TEXT NOT NULL -- pending/running/done/failed/blocked
-depends_on TEXT NOT NULL DEFAULT '[]' -- JSON array
 provider TEXT NOT NULL DEFAULT 'claude' -- claude/codex
 created_at DATETIME NOT NULL
 updated_at DATETIME NOT NULL
@@ -224,11 +225,11 @@ codex exec --json \
 请求体：
 ```json
 {
+  "insert_after_task_id": "task_xxx",
   "items": [
     {
       "title": "后续任务标题",
       "description": "后续任务描述",
-      "depends_on": ["task_id_a"],
       "provider": "claude|codex"
     }
   ]
@@ -237,10 +238,38 @@ codex exec --json \
 
 说明：
 - `items` 范围：1~50。
-- 新任务归属当前项目，优先级自动追加到队尾。
+- 新任务归属当前项目。
+- 未传 `insert_after_task_id` 时，优先级自动追加到队尾。
+- 传入 `insert_after_task_id` 时，会把整批任务插入到该任务之后，并自动重排后续任务优先级。
 - `provider` 字段当前保留兼容，创建时不会直接指定执行 provider（由调度时策略决定）。
 
-### 7.3 `auto-work.list_pending_tasks` / `auto-work.list_history_tasks`
+### 7.3 `auto-work.update_task`
+请求体：
+```json
+{
+  "task_id": "task_xxx",
+  "title": "新的标题",
+  "description": "新的描述",
+  "insert_after_task_id": "task_yyy"
+}
+```
+
+说明：
+- `task_id` 必填，其他字段选填；未传字段保持不变。
+- 传入 `insert_after_task_id` 时，会把任务移动到该任务之后，并自动重排后续任务优先级。
+- 不允许修改运行中的任务。
+
+### 7.4 `auto-work.delete_task`
+请求体：
+```json
+{"task_id": "task_xxx"}
+```
+
+说明：
+- 删除后会自动重排后续任务优先级。
+- 不允许删除运行中的任务。
+
+### 7.5 `auto-work.list_pending_tasks` / `auto-work.list_history_tasks`
 请求体（可选）：
 ```json
 {"limit": 20}
@@ -251,7 +280,7 @@ codex exec --json \
 - `list_pending_tasks` 返回当前项目 `pending`。
 - `list_history_tasks` 返回当前项目 `done/failed/blocked`。
 
-### 7.4 `auto-work.get_task_detail`
+### 7.6 `auto-work.get_task_detail`
 请求体：
 ```json
 {"task_id": "task_xxx"}
@@ -263,7 +292,7 @@ codex exec --json \
 
 ## 8. 安全设计
 
-- MCP 写操作强约束 `run_id/task_id` 与运行态，避免跨 run 误写。
+- `auto-work.report_result` 强约束 `run_id/task_id` 与运行态；其他 MCP 写操作在有 run 上下文时绑定当前项目，无 run 上下文时按 `project_id/project_name/project_path/task_id` 限定作用域。
 - 所有运行事件与 MCP 回调事件写入 `run_events`，便于审计与排障。
 - Runner 工作目录绑定到任务所属项目路径（`project_path`）。
 - Telegram token 当前保存在本地 SQLite `global_settings`（明文），依赖本机访问控制；如需更高安全级别应迁移到系统密钥链。

@@ -31,13 +31,18 @@ func TestParseTrailingLimit(t *testing.T) {
 	}
 }
 
-func TestHelpText_IncludesNewQueryCommands(t *testing.T) {
+func TestHelpText_IncludesSupportedCommands(t *testing.T) {
 	t.Parallel()
 
 	text := helpText()
-	for _, cmd := range []string{"/addproject", "/setprovider", "/dispatch", "/tasklogs", "/projects", "/project", "/pending", "/queue", "/failed", "/running"} {
+	for _, cmd := range []string{"/addproject", "/setprovider", "/autodisp", "/addtask", "/dispatch", "/tasklogs", "/projects", "/project", "/pending", "/failed", "/running"} {
 		if !strings.Contains(text, cmd) {
 			t.Fatalf("expected help text contains %s, got:\n%s", cmd, text)
+		}
+	}
+	for _, removed := range []string{"/newproject", "/provider", "/queue", "/status", "/latestlogs", "/newtask", "/autodisp_on", "/autodisp_off"} {
+		if strings.Contains(text, removed) {
+			t.Fatalf("expected help text not contains removed alias %s, got:\n%s", removed, text)
 		}
 	}
 }

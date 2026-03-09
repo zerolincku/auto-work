@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   description TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 100,
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'failed', 'blocked')),
-  depends_on TEXT NOT NULL DEFAULT '[]',
   provider TEXT NOT NULL DEFAULT 'claude',
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
@@ -78,4 +77,3 @@ CREATE TABLE IF NOT EXISTS artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_run
   ON artifacts(run_id);
-

@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -77,13 +76,6 @@ func (d *Dispatcher) ClaimNextTaskForAgent(ctx context.Context, agentID, provide
 	}
 
 	for _, task := range candidates {
-		ok, err := dependenciesDone(ctx, tx, task.ProjectID, task.DependsOn)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			continue
-		}
 		allowed, err := projectAllowsTaskDispatch(ctx, tx, task)
 		if err != nil {
 			return nil, nil, err
@@ -146,14 +138,6 @@ func (d *Dispatcher) ClaimTaskForAgent(ctx context.Context, agentID, provider, t
 		return nil, nil, err
 	}
 	if task.Status != domain.TaskPending {
-		return nil, nil, ErrNoRunnableTask
-	}
-
-	ok, err := dependenciesDone(ctx, tx, task.ProjectID, task.DependsOn)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !ok {
 		return nil, nil, ErrNoRunnableTask
 	}
 	allowed, err := projectAllowsTaskDispatch(ctx, tx, *task)
@@ -322,27 +306,21 @@ INSERT INTO runs (
 
 func getTaskByIDForDispatch(ctx context.Context, tx *sql.Tx, taskID string) (*domain.Task, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, title, description, priority, status, depends_on, provider, retry_count, created_at, updated_at
+SELECT id, project_id, title, description, priority, status, provider, retry_count, created_at, updated_at
 FROM tasks
 WHERE id = ?`, taskID)
 
 	var (
-		task        domain.Task
-		projectID   sql.NullString
-		dependsOnJS string
+		task      domain.Task
+		projectID sql.NullString
 	)
 	if err := row.Scan(
-		&task.ID, &projectID, &task.Title, &task.Description, &task.Priority, &task.Status, &dependsOnJS, &task.Provider, &task.RetryCount, &task.CreatedAt, &task.UpdatedAt,
+		&task.ID, &projectID, &task.Title, &task.Description, &task.Priority, &task.Status, &task.Provider, &task.RetryCount, &task.CreatedAt, &task.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	if projectID.Valid {
 		task.ProjectID = projectID.String
-	}
-	if dependsOnJS == "" {
-		task.DependsOn = []string{}
-	} else if err := json.Unmarshal([]byte(dependsOnJS), &task.DependsOn); err != nil {
-		return nil, err
 	}
 	return &task, nil
 }
@@ -382,7 +360,7 @@ func listPendingTasks(ctx context.Context, tx *sql.Tx, provider, projectID strin
 		provider = "claude"
 	}
 	query := `
-SELECT t.id, t.project_id, t.title, t.description, t.priority, t.status, t.depends_on, t.provider, t.retry_count, t.created_at, t.updated_at
+SELECT t.id, t.project_id, t.title, t.description, t.priority, t.status, t.provider, t.retry_count, t.created_at, t.updated_at
 FROM tasks t
 LEFT JOIN projects p ON p.id = t.project_id
 WHERE t.status = 'pending'
@@ -405,22 +383,16 @@ LIMIT ?`
 	out := make([]domain.Task, 0)
 	for rows.Next() {
 		var (
-			t           domain.Task
-			projectID   sql.NullString
-			dependsOnJS string
+			t         domain.Task
+			projectID sql.NullString
 		)
 		if err := rows.Scan(
-			&t.ID, &projectID, &t.Title, &t.Description, &t.Priority, &t.Status, &dependsOnJS, &t.Provider, &t.RetryCount, &t.CreatedAt, &t.UpdatedAt,
+			&t.ID, &projectID, &t.Title, &t.Description, &t.Priority, &t.Status, &t.Provider, &t.RetryCount, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		if projectID.Valid {
 			t.ProjectID = projectID.String
-		}
-		if dependsOnJS == "" {
-			t.DependsOn = []string{}
-		} else if err := json.Unmarshal([]byte(dependsOnJS), &t.DependsOn); err != nil {
-			return nil, err
 		}
 		out = append(out, t)
 	}
@@ -514,48 +486,4 @@ func projectHasPendingRetryTasks(ctx context.Context, tx *sql.Tx, projectID stri
 		return false, err
 	}
 	return cnt > 0, nil
-}
-
-func dependenciesDone(ctx context.Context, tx *sql.Tx, projectID string, deps []string) (bool, error) {
-	for _, dep := range deps {
-		dep = strings.TrimSpace(dep)
-		if dep == "" {
-			continue
-		}
-
-		// Prefer canonical dependency by task ID.
-		row := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, dep)
-		var st domain.TaskStatus
-		if err := row.Scan(&st); err == nil {
-			if st != domain.TaskDone {
-				return false, nil
-			}
-			continue
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return false, err
-		}
-
-		// Backward compatibility: allow dependency by title within same project.
-		if strings.TrimSpace(projectID) == "" {
-			return false, nil
-		}
-		titleRow := tx.QueryRowContext(ctx, `
-SELECT COUNT(1), COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0)
-FROM tasks
-WHERE project_id = ? AND title = ?`, projectID, dep)
-		var (
-			total int
-			done  int
-		)
-		if err := titleRow.Scan(&total, &done); err != nil {
-			return false, err
-		}
-		if total == 0 {
-			return false, nil
-		}
-		if done < total {
-			return false, nil
-		}
-	}
-	return true, nil
 }

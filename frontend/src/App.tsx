@@ -14,6 +14,7 @@ type Project = {
   SystemPrompt?: string;
   FailurePolicy?: string;
   AutoDispatchEnabled?: boolean;
+  FrontendScreenshotReportEnabled?: boolean;
   CreatedAt: string;
   UpdatedAt: string;
 };
@@ -25,7 +26,6 @@ type Task = {
   Description: string;
   Priority: number;
   Status: string;
-  DependsOn: string[];
   Provider: string;
   RetryCount?: number;
   NextRetryAt?: string;
@@ -69,6 +69,7 @@ type DisplayLogEvent = {
   kind: string;
   text: string;
   title: string;
+  semantic: boolean;
 };
 
 type TaskRunHistory = {
@@ -114,7 +115,7 @@ type GlobalSettings = {
 
 type AppAPI = {
   Health: () => Promise<string>;
-  MCPStatus: () => Promise<MCPStatus>;
+  MCPStatus: (projectID: string) => Promise<MCPStatus>;
   GetGlobalSettings: () => Promise<GlobalSettings>;
   UpdateGlobalSettings: (req: {
     telegram_enabled: boolean;
@@ -133,6 +134,7 @@ type AppAPI = {
     model: string;
     system_prompt: string;
     failure_policy: string;
+    frontend_screenshot_report_enabled: boolean;
   }) => Promise<Project>;
   UpdateProjectAIConfig: (req: {
     project_id: string;
@@ -148,6 +150,7 @@ type AppAPI = {
     model: string;
     system_prompt: string;
     failure_policy: string;
+    frontend_screenshot_report_enabled: boolean;
   }) => Promise<Project>;
   DeleteProject: (projectID: string) => Promise<void>;
   ListProjects: (limit: number) => Promise<Project[]>;
@@ -156,7 +159,6 @@ type AppAPI = {
     title: string;
     description: string;
     priority: number;
-    depends_on: string[];
     provider: string;
   }) => Promise<Task>;
   UpdateTask: (req: {
@@ -164,7 +166,6 @@ type AppAPI = {
     title: string;
     description: string;
     priority: number;
-    depends_on: string[];
   }) => Promise<Task>;
   DeleteTask: (taskID: string) => Promise<void>;
   ListTasks: (
@@ -191,10 +192,12 @@ type AppAPI = {
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 type OSPlatform = "darwin" | "windows" | "linux" | "unknown";
+type TaskCompletionFilter = "incomplete" | "completed";
 
 const HEALTH_MESSAGE_CHECKING = "__health.checking__";
 const HEALTH_MESSAGE_BACKEND_NOT_READY = "__health.backend_not_ready__";
 const NOTICE_AUTO_CLOSE_MS = 5000;
+const LOG_PREVIEW_CHAR_LIMIT = 420;
 
 function formatTelegramIncomingNotice(payload: unknown, t: Translate): string | null {
   if (!payload || typeof payload !== "object") {
@@ -343,11 +346,322 @@ function formatSystemLogPayload(raw: string, maxLen = 1400): string {
   return `${normalized.slice(0, maxLen)}...`;
 }
 
+function formatRunLogPayload(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const parsed = safeParseJSON(trimmed);
+  const normalized = parsed ? JSON.stringify(parsed, null, 2) : trimmed;
+  return normalized;
+}
+
 function splitLogKind(kind: string): { source: string; channel: string } {
   const [source, channel] = kind.split(".");
   return {
     source: source || kind || "system",
     channel: channel || kind || "log",
+  };
+}
+
+function toLogTokenClass(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "unknown";
+}
+
+function resolveLogTone(kind: string): "error" | "ok" | "neutral" {
+  const normalized = kind.toLowerCase();
+  if (
+    normalized.includes("stderr") ||
+    normalized.includes("error") ||
+    normalized.includes("failed") ||
+    normalized.includes("blocked")
+  ) {
+    return "error";
+  }
+  if (normalized.includes("stdout") || normalized.includes("result") || normalized.includes("done")) {
+    return "ok";
+  }
+  return "neutral";
+}
+
+type SemanticLogSummary = {
+  kind: string;
+  text: string;
+};
+
+function buildDisplayLog(log: RunLogEvent, text: string, semantic: boolean, kindOverride?: string): DisplayLogEvent {
+  return {
+    id: log.id,
+    ts: log.ts,
+    kind: kindOverride || log.kind,
+    text,
+    title: log.payload,
+    semantic,
+  };
+}
+
+function localizeLogChannel(channel: string, t: Translate): string {
+  const normalized = channel.toLowerCase();
+  switch (normalized) {
+    case "started":
+      return t("logs.channelStarted");
+    case "completed":
+      return t("logs.channelCompleted");
+    case "failed":
+      return t("logs.channelFailed");
+    case "cancelled":
+      return t("logs.channelCancelled");
+    case "pending":
+      return t("logs.channelPending");
+    case "running":
+      return t("logs.channelRunning");
+    case "done":
+      return t("logs.channelDone");
+    case "stdout":
+      return t("logs.channelStdout");
+    case "stderr":
+      return t("logs.channelStderr");
+    case "error":
+      return t("logs.channelError");
+    case "result":
+      return t("logs.channelResult");
+    case "report_result":
+      return t("logs.channelReportResult");
+    case "tool":
+      return t("logs.channelTool");
+    default:
+      return channel.toUpperCase();
+  }
+}
+
+function localizeLogType(type: string, t: Translate): string {
+  const normalized = type.toLowerCase();
+  switch (normalized) {
+    case "command_execution":
+      return t("logs.typeCommandExecution");
+    case "agent_message":
+      return t("logs.typeAgentMessage");
+    case "mcp_tool_call":
+      return t("logs.typeMcpToolCall");
+    case "reasoning":
+      return t("logs.typeReasoning");
+    case "tool_result":
+      return t("logs.typeToolResult");
+    case "tool_use":
+      return t("logs.typeToolUse");
+    case "assistant":
+      return t("logs.typeAssistant");
+    case "system":
+      return t("logs.typeSystem");
+    case "user":
+      return t("logs.typeUser");
+    case "result":
+      return t("logs.typeResult");
+    default:
+      return type || t("common.unknown");
+  }
+}
+
+function toSummaryValue(value: unknown, maxLen = 420): string {
+  const truncate = (raw: string): string => {
+    const normalized = raw.replace(/\r\n/g, "\n").trim();
+    if (normalized.length <= maxLen) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxLen).trimEnd()}...`;
+  };
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return truncate(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return truncate(JSON.stringify(value, null, 2));
+  } catch {
+    return "";
+  }
+}
+
+function formatProjectPathForSidebar(rawPath: string, fallback: string, maxLen = 38): string {
+  const normalized = rawPath.trim();
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.length <= maxLen) {
+    return normalized;
+  }
+
+  const separator = normalized.includes("\\") && !normalized.includes("/") ? "\\" : "/";
+  const parts = normalized.split(/[/\\]+/).filter(Boolean);
+  const ellipsis = `...${separator}`;
+  if (parts.length === 0) {
+    return `${ellipsis}${normalized.slice(-(maxLen - ellipsis.length))}`;
+  }
+
+  let tail = parts[parts.length - 1];
+  if (tail.length + ellipsis.length > maxLen) {
+    return `${ellipsis}${tail.slice(-(maxLen - ellipsis.length))}`;
+  }
+
+  for (let idx = parts.length - 2; idx >= 0; idx -= 1) {
+    const candidate = `${parts[idx]}${separator}${tail}`;
+    if (candidate.length + ellipsis.length > maxLen) {
+      break;
+    }
+    tail = candidate;
+  }
+
+  if (tail === normalized) {
+    return normalized;
+  }
+  return `${ellipsis}${tail}`;
+}
+
+function buildTodoListLines(items: unknown, t: Translate): string[] {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+  const lines: string[] = [];
+  let completed = 0;
+  let total = 0;
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const row = item as Record<string, unknown>;
+    const text = String(row.text || row.title || row.task || "").trim();
+    if (!text) {
+      continue;
+    }
+    const done = Boolean(row.completed || row.done);
+    total += 1;
+    if (done) {
+      completed += 1;
+      lines.push(t("logs.todoItemDone", { text }));
+      continue;
+    }
+    lines.push(t("logs.todoItemPending", { text }));
+  }
+
+  if (total === 0) {
+    return [];
+  }
+  return [
+    t("logs.todoListTitle"),
+    t("logs.todoListProgress", { done: String(completed), total: String(total) }),
+    ...lines,
+  ];
+}
+
+function parseItemEventSummary(parsed: Record<string, unknown>, t: Translate): SemanticLogSummary | null {
+  const eventType = String(parsed.type || "");
+  if (!eventType.startsWith("item.")) {
+    return null;
+  }
+
+  const item = parsed.item && typeof parsed.item === "object" ? (parsed.item as Record<string, unknown>) : null;
+  const itemType = String(item?.type || t("common.unknown"));
+  const parts: string[] = [t("logs.itemType", { itemType: localizeLogType(itemType, t) })];
+
+  if (itemType === "todo_list") {
+    const todoLines = buildTodoListLines(item?.items ?? parsed.items, t);
+    if (todoLines.length) {
+      parts.push(...todoLines);
+    }
+  }
+
+  const command = toSummaryValue(item?.command ?? parsed.command, 520);
+  if (command) {
+    parts.push(t("logs.commandSummary", { command }));
+  }
+
+  const output = toSummaryValue(item?.aggregated_output ?? parsed.aggregated_output, 620);
+  if (output) {
+    parts.push(t("logs.outputSummary", { output }));
+  }
+
+  if (typeof item?.exit_code === "number") {
+    parts.push(t("logs.exitCode", { code: String(item.exit_code) }));
+  }
+
+  const message = toSummaryValue(item?.text ?? parsed.text, 620);
+  if (message) {
+    parts.push(t("logs.messageSummary", { text: message }));
+  }
+
+  const server = toSummaryValue(item?.server ?? parsed.server, 180);
+  if (server) {
+    parts.push(t("logs.serverSummary", { server }));
+  }
+
+  const tool = toSummaryValue(item?.tool ?? item?.name ?? parsed.tool ?? parsed.name, 220);
+  if (tool) {
+    parts.push(t("logs.toolNameSummary", { tool }));
+  }
+
+  const args = toSummaryValue(item?.arguments ?? parsed.arguments, 620);
+  if (args) {
+    parts.push(t("logs.argumentsSummary", { arguments: args }));
+  }
+
+  const result = toSummaryValue(item?.result ?? parsed.result, 620);
+  if (result) {
+    parts.push(t("logs.resultSummary", { result }));
+  }
+
+  const error = toSummaryValue(item?.error ?? parsed.error, 420);
+  if (error) {
+    parts.push(t("logs.errorSummary", { error }));
+  }
+
+  return {
+    kind: eventType,
+    text: parts.join("\n"),
+  };
+}
+
+function parseStructuredSummary(parsed: Record<string, unknown>, t: Translate): SemanticLogSummary | null {
+  const itemSummary = parseItemEventSummary(parsed, t);
+  if (itemSummary) {
+    return itemSummary;
+  }
+
+  const type = String(parsed.type || "");
+  if (!type) {
+    return null;
+  }
+  const parts: string[] = [t("logs.itemType", { itemType: localizeLogType(type, t) })];
+
+  const subtype = toSummaryValue(parsed.subtype, 220);
+  if (subtype) {
+    parts.push(t("logs.subtypeSummary", { subtype }));
+  }
+
+  const message = toSummaryValue(parsed.text ?? parsed.message, 620);
+  if (message) {
+    parts.push(t("logs.messageSummary", { text: message }));
+  }
+
+  const result = toSummaryValue(parsed.result, 620);
+  if (result) {
+    parts.push(t("logs.resultSummary", { result }));
+  }
+
+  const error = toSummaryValue(parsed.error, 420);
+  if (error) {
+    parts.push(t("logs.errorSummary", { error }));
+  }
+
+  return {
+    kind: type,
+    text: parts.join("\n"),
   };
 }
 
@@ -357,90 +671,70 @@ function wait(ms: number): Promise<void> {
   });
 }
 
-function parseClaudeLogLine(log: RunLogEvent, t: Translate): DisplayLogEvent | null {
+function parseClaudeLogLine(log: RunLogEvent, t: Translate): DisplayLogEvent {
+  const rawPayload = log.payload.trim() || log.payload;
   const parsed = safeParseJSON(log.payload);
   if (!parsed) {
-    return {
-      id: log.id,
-      ts: log.ts,
-      kind: log.kind,
-      text: compactText(log.payload),
-      title: log.payload,
-    };
+    return buildDisplayLog(log, rawPayload, false);
   }
 
   const type = String(parsed.type || "");
   if (!type) {
-    return {
-      id: log.id,
-      ts: log.ts,
-      kind: log.kind,
-      text: compactText(log.payload),
-      title: log.payload,
-    };
+    return buildDisplayLog(log, rawPayload, false);
   }
 
   if (type === "assistant") {
     const message = parsed.message as Record<string, unknown> | undefined;
     const content = Array.isArray(message?.content) ? (message?.content as Array<Record<string, unknown>>) : [];
     const texts: string[] = [];
-    let toolName = "";
+    const toolNames: string[] = [];
     for (const item of content) {
       const itemType = String(item?.type || "");
       if (itemType === "thinking") {
         continue;
       }
       if (itemType === "text") {
-        const text = compactText(String(item?.text || ""));
+        const text = compactText(String(item?.text || ""), 620);
         if (text) texts.push(text);
         continue;
       }
       if (itemType === "tool_use") {
-        toolName = String(item?.name || "");
+        const toolName = String(item?.name || "").trim();
+        if (toolName) {
+          toolNames.push(toolName);
+        }
         continue;
       }
     }
-    if (toolName) {
-      return {
-        id: log.id,
-        ts: log.ts,
-        kind: "assistant.tool",
-        text: t("logs.callTool", { toolName }),
-        title: log.payload,
-      };
+    const fragments: string[] = [t("logs.itemType", { itemType: localizeLogType("assistant", t) })];
+    if (toolNames.length) {
+      fragments.push(t("logs.callTool", { toolName: toolNames.join(", ") }));
     }
-    if (!texts.length) {
-      return null;
+    if (texts.length) {
+      fragments.push(t("logs.messageSummary", { text: texts.join(" ") }));
     }
-    return {
-      id: log.id,
-      ts: log.ts,
-      kind: "assistant",
-      text: texts.join(" "),
-      title: log.payload,
-    };
+    if (fragments.length <= 1) {
+      return buildDisplayLog(log, rawPayload, false, "assistant");
+    }
+    return buildDisplayLog(log, fragments.join("\n"), true, toolNames.length ? "assistant.tool" : "assistant");
   }
 
   if (type === "result") {
     const subtype = String(parsed.subtype || "");
-    const resultText = compactText(String(parsed.result || ""));
+    const resultText = compactText(String(parsed.result || ""), 620);
     const denials = Array.isArray(parsed.permission_denials)
       ? (parsed.permission_denials as Array<Record<string, unknown>>).map((v) => String(v?.tool_name || "")).filter(Boolean)
       : [];
+    const parts: string[] = [t("logs.itemType", { itemType: localizeLogType("result", t) })];
     let text = t("logs.result", { subtype: subtype || t("common.unknown") });
     if (resultText) {
-      text = `${text} | ${resultText}`;
+      text = `${text} ${resultText}`;
     }
+    parts.push(text);
     if (denials.length) {
-      text = `${text} | ${t("logs.deniedTools", { tools: denials.join(", ") })}`;
+      parts.push(t("logs.deniedTools", { tools: denials.join(", ") }));
     }
-    return {
-      id: log.id,
-      ts: log.ts,
-      kind: "result",
-      text,
-      title: log.payload,
-    };
+    return buildDisplayLog(log, parts.join("\n"), true, "result");
   }
 
   if (type === "system") {
@@ -458,22 +752,13 @@ function parseClaudeLogLine(log: RunLogEvent, t: Translate): DisplayLogEvent | n
       if (mcp) {
         fragments.push(t("logs.mcp", { mcp }));
       }
-      const text = compactText(fragments.join(" | "));
-      return {
-        id: log.id,
-        ts: log.ts,
-        kind: "system.init",
-        text,
-        title: log.payload,
-      };
+      return buildDisplayLog(log, fragments.join("\n"), true, "system.init");
     }
-    return {
-      id: log.id,
-      ts: log.ts,
-      kind: subtype ? `system.${subtype}` : "system",
-      text: compactText(log.payload),
-      title: log.payload,
-    };
+    const summary = parseStructuredSummary(parsed, t);
+    if (summary) {
+      return buildDisplayLog(log, summary.text, true, subtype ? `system.${subtype}` : summary.kind);
+    }
+    return buildDisplayLog(log, rawPayload, false, subtype ? `system.${subtype}` : "system");
   }
 
   if (type === "user") {
@@ -482,47 +767,38 @@ function parseClaudeLogLine(log: RunLogEvent, t: Translate): DisplayLogEvent | n
     for (const item of content) {
       if (String(item?.type || "") === "tool_result") {
         const isError = Boolean(item?.is_error);
-        const result = compactText(String(item?.content || ""));
+        const result = compactText(String(item?.content || ""), 620);
         if (!result) {
-          return null;
+          break;
         }
-        return {
-          id: log.id,
-          ts: log.ts,
-          kind: isError ? "tool.error" : "tool.result",
-          text: isError ? t("logs.toolError", { result }) : t("logs.toolOutput", { result }),
-          title: log.payload,
-        };
+        const parts = [
+          t("logs.itemType", { itemType: localizeLogType("tool_result", t) }),
+          isError ? t("logs.toolError", { result }) : t("logs.toolOutput", { result }),
+        ];
+        return buildDisplayLog(
+          log,
+          parts.join("\n"),
+          true,
+          isError ? "tool.error" : "tool.result",
+        );
       }
     }
-    return null;
+    const summary = parseStructuredSummary(parsed, t);
+    if (summary) {
+      return buildDisplayLog(log, summary.text, true, summary.kind);
+    }
+    return buildDisplayLog(log, rawPayload, false, "user");
   }
 
-  return {
-    id: log.id,
-    ts: log.ts,
-    kind: type,
-    text: compactText(log.payload),
-    title: log.payload,
-  };
+  const summary = parseStructuredSummary(parsed, t);
+  if (summary) {
+    return buildDisplayLog(log, summary.text, true, summary.kind);
+  }
+  return buildDisplayLog(log, rawPayload, false, type);
 }
 
-function toDisplayLog(log: RunLogEvent, t: Translate): DisplayLogEvent | null {
-  if (
-    log.kind === "claude.stdout" ||
-    log.kind === "claude.stderr" ||
-    log.kind === "codex.stdout" ||
-    log.kind === "codex.stderr"
-  ) {
-    return parseClaudeLogLine(log, t);
-  }
-  return {
-    id: log.id,
-    ts: log.ts,
-    kind: log.kind,
-    text: compactText(log.payload),
-    title: log.payload,
-  };
+function toDisplayLog(log: RunLogEvent, t: Translate): DisplayLogEvent {
+  return parseClaudeLogLine(log, t);
 }
 
 type IconProps = {
@@ -734,6 +1010,7 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectID, setSelectedProjectID] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskCompletionFilter, setTaskCompletionFilter] = useState<TaskCompletionFilter>("incomplete");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [toast, setToast] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -749,6 +1026,8 @@ function App() {
   const [runningRuns, setRunningRuns] = useState<RunningRun[]>([]);
   const [selectedRunID, setSelectedRunID] = useState("");
   const [runLogs, setRunLogs] = useState<RunLogEvent[]>([]);
+  const [expandedLogIDs, setExpandedLogIDs] = useState<Record<string, boolean>>({});
+  const [rawLogVisibleIDs, setRawLogVisibleIDs] = useState<Record<string, boolean>>({});
   const logStreamRef = useRef<HTMLDivElement | null>(null);
   const projectNameInputRef = useRef<HTMLInputElement | null>(null);
   const taskTitleInputRef = useRef<HTMLInputElement | null>(null);
@@ -760,14 +1039,15 @@ function App() {
 
   const [projectName, setProjectName] = useState("");
   const [projectPath, setProjectPath] = useState("");
-  const [newProjectProvider, setNewProjectProvider] = useState("claude");
+  const [newProjectProvider, setNewProjectProvider] = useState("codex");
   const [newProjectFailurePolicy, setNewProjectFailurePolicy] = useState("block");
   const [newProjectModel, setNewProjectModel] = useState("");
   const [projectEditName, setProjectEditName] = useState("");
-  const [projectDefaultProvider, setProjectDefaultProvider] = useState("claude");
+  const [projectDefaultProvider, setProjectDefaultProvider] = useState("codex");
   const [projectFailurePolicy, setProjectFailurePolicy] = useState("block");
   const [projectModel, setProjectModel] = useState("");
   const [projectSystemPrompt, setProjectSystemPrompt] = useState("");
+  const [projectFrontendScreenshotReportEnabled, setProjectFrontendScreenshotReportEnabled] = useState(false);
   const [savingProjectAIConfig, setSavingProjectAIConfig] = useState(false);
 
   const [taskTitle, setTaskTitle] = useState("");
@@ -848,19 +1128,46 @@ function App() {
   }, [runLogs, tr, currentLanguage]);
 
   const lastDisplayLogID = displayLogs.length ? displayLogs[displayLogs.length - 1].id : "";
-  const orderedTasks = useMemo(() => {
-    return [...tasks].sort((a, b) => {
-      if (a.Priority !== b.Priority) {
-        return a.Priority - b.Priority;
-      }
+  const groupedTasks = useMemo(() => {
+    const byCreatedAt = (a: Task, b: Task) => {
       const aTime = Date.parse(a.CreatedAt);
       const bTime = Date.parse(b.CreatedAt);
       if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) {
         return aTime - bTime;
       }
       return a.ID.localeCompare(b.ID);
+    };
+
+    const incomplete: Task[] = [];
+    const completed: Task[] = [];
+    for (const task of tasks) {
+      if (task.Status === "done") {
+        completed.push(task);
+      } else {
+        incomplete.push(task);
+      }
+    }
+
+    incomplete.sort((a, b) => {
+      if (a.Priority !== b.Priority) {
+        return a.Priority - b.Priority;
+      }
+      return byCreatedAt(a, b);
     });
+
+    completed.sort((a, b) => {
+      if (a.Priority !== b.Priority) {
+        return b.Priority - a.Priority;
+      }
+      return byCreatedAt(a, b);
+    });
+
+    return { incomplete, completed };
   }, [tasks]);
+  const filteredTasks = useMemo(
+    () => (taskCompletionFilter === "completed" ? groupedTasks.completed : groupedTasks.incomplete),
+    [groupedTasks, taskCompletionFilter],
+  );
   const selectedProject = useMemo(
     () => projects.find((p) => p.ID === selectedProjectID) || null,
     [projects, selectedProjectID],
@@ -973,17 +1280,19 @@ function App() {
   useEffect(() => {
     if (!selectedProject) {
       setProjectEditName("");
-      setProjectDefaultProvider("claude");
+      setProjectDefaultProvider("codex");
       setProjectFailurePolicy("block");
       setProjectModel("");
       setProjectSystemPrompt("");
+      setProjectFrontendScreenshotReportEnabled(false);
       return;
     }
     setProjectEditName(selectedProject.Name || "");
-    setProjectDefaultProvider(selectedProject.DefaultProvider || "claude");
+    setProjectDefaultProvider(selectedProject.DefaultProvider || "codex");
     setProjectFailurePolicy(selectedProject.FailurePolicy || "block");
     setProjectModel(selectedProject.Model || "");
     setProjectSystemPrompt(selectedProject.SystemPrompt || "");
+    setProjectFrontendScreenshotReportEnabled(Boolean(selectedProject.FrontendScreenshotReportEnabled));
   }, [selectedProject]);
 
   useEffect(() => {
@@ -991,7 +1300,7 @@ function App() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const status = await api.MCPStatus();
+        const status = await api.MCPStatus(selectedProjectID);
         if (!cancelled) {
           setMCPStatus(status);
         }
@@ -1149,6 +1458,11 @@ function App() {
   }, [api, selectedRunID, selectedRunIsLive, tr]);
 
   useEffect(() => {
+    setExpandedLogIDs({});
+    setRawLogVisibleIDs({});
+  }, [selectedRunID]);
+
+  useEffect(() => {
     const el = logStreamRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -1259,7 +1573,7 @@ function App() {
   const openProjectModal = useCallback(() => {
     setProjectFormError("");
     setProjectSubmitAttempted(false);
-    setNewProjectProvider("claude");
+    setNewProjectProvider("codex");
     setNewProjectFailurePolicy("block");
     setNewProjectModel("");
     setShowProjectModal(true);
@@ -1441,10 +1755,11 @@ function App() {
         model: newProjectModel.trim(),
         system_prompt: "",
         failure_policy: newProjectFailurePolicy,
+        frontend_screenshot_report_enabled: false,
       });
       setProjectName("");
       setProjectPath("");
-      setNewProjectProvider("claude");
+      setNewProjectProvider("codex");
       setNewProjectFailurePolicy("block");
       setNewProjectModel("");
       setProjectFormError("");
@@ -1488,7 +1803,6 @@ function App() {
           title: taskTitle,
           description: taskDesc,
           priority,
-          depends_on: [],
         });
       } else {
         await api.CreateTask({
@@ -1496,7 +1810,6 @@ function App() {
           title: taskTitle,
           description: taskDesc,
           priority,
-          depends_on: [],
           provider: "",
         });
       }
@@ -1563,13 +1876,15 @@ function App() {
         model: projectModel.trim(),
         system_prompt: projectSystemPrompt,
         failure_policy: projectFailurePolicy,
+        frontend_screenshot_report_enabled: projectFrontendScreenshotReportEnabled,
       });
       setProjects((prev) => prev.map((item) => (item.ID === updated.ID ? updated : item)));
       setProjectEditName(updated.Name || "");
-      setProjectDefaultProvider(updated.DefaultProvider || "claude");
+      setProjectDefaultProvider(updated.DefaultProvider || "codex");
       setProjectFailurePolicy(updated.FailurePolicy || "block");
       setProjectModel(updated.Model || "");
       setProjectSystemPrompt(updated.SystemPrompt || "");
+      setProjectFrontendScreenshotReportEnabled(Boolean(updated.FrontendScreenshotReportEnabled));
       setInfo(tr("info.projectSettingsSaved"));
     } catch (err) {
       setError(formatBackendError(err, tr));
@@ -1738,6 +2053,31 @@ function App() {
     return d.toLocaleString(currentLanguage, { hour12: false });
   }
 
+  function isLongLogText(text: string): boolean {
+    return text.length > LOG_PREVIEW_CHAR_LIMIT;
+  }
+
+  function getCollapsedLogText(text: string): string {
+    if (!isLongLogText(text)) {
+      return text;
+    }
+    return `${text.slice(0, LOG_PREVIEW_CHAR_LIMIT).trimEnd()}...`;
+  }
+
+  function toggleLogExpanded(logID: string) {
+    setExpandedLogIDs((prev) => ({
+      ...prev,
+      [logID]: !prev[logID],
+    }));
+  }
+
+  function toggleRawLogVisible(logID: string) {
+    setRawLogVisibleIDs((prev) => ({
+      ...prev,
+      [logID]: !prev[logID],
+    }));
+  }
+
   const isTaskDetailPage = showTaskDetailModal && !!selectedDetailTask;
   const windowChromeTitle =
     isTaskDetailPage && selectedDetailTask?.Title
@@ -1749,10 +2089,12 @@ function App() {
           : page === "systemLogs"
             ? tr("systemLogs.title")
             : tr("home.appTitle");
-  const showWindowChrome = platform === "darwin" || platform === "windows";
+  const showWindowChrome = platform === "windows";
+  const isHomeLayoutPage = page !== "systemLogs";
   const appPageClassName = [
     "app-page",
     `app-page-${platform}`,
+    isHomeLayoutPage ? "app-page-home-layout" : "",
     showWindowChrome ? "app-page-native-chrome" : "",
   ].filter(Boolean).join(" ");
 
@@ -1762,6 +2104,93 @@ function App() {
       syncWindowMaximised();
     }, 80);
   }, [syncWindowMaximised]);
+
+  const renderTaskRow = (task: Task, options?: { showDeleteAction?: boolean; showOpenDetailAction?: boolean }) => (
+    <article
+      className={`codex-task-row ${task.Status === "running" || runningTaskIDs.has(task.ID) ? "codex-task-row-running" : ""}`}
+      key={task.ID}
+    >
+      <div className="codex-task-row-head">
+        <h3>{task.Title}</h3>
+        <span className={`status status-${task.Status} codex-task-status`} aria-label={`${tr("detail.status")} ${statusText[task.Status] || task.Status}`}>
+          {statusText[task.Status] || task.Status}
+        </span>
+      </div>
+      {task.Description.trim() && task.Description.trim() !== task.Title.trim() && (
+        <p className="codex-task-row-desc">{task.Description}</p>
+      )}
+      <div className="codex-task-row-meta" aria-label={tr("home.taskMetadata")}>
+        <div className="codex-task-row-badges">
+          <span className="badge badge-priority codex-task-badge">
+            {tr("detail.priority")} · {task.Priority}
+          </span>
+          <span className="badge badge-provider codex-task-badge">
+            {tr("detail.provider")} · {task.Provider || tr("common.unassigned")}
+          </span>
+        </div>
+        {task.Status === "failed" && (
+          <div className="codex-task-row-submeta">
+            <span>{tr("detail.executionCount")} · {task.RetryCount ?? 0}</span>
+            <span>{tr("detail.nextRunAt")} · {formatDateTime(task.NextRetryAt)}</span>
+          </div>
+        )}
+      </div>
+      <div className="codex-task-row-actions">
+        {options?.showOpenDetailAction !== false && (
+          <button type="button" className="codex-action-button" onClick={() => void onOpenTaskDetail(task)}>
+            {tr("home.openTaskDetail")}
+          </button>
+        )}
+        {task.Status !== "running" && task.Status !== "done" && (
+          <button
+            type="button"
+            className="codex-action-button"
+            onClick={() => openEditTaskModal(task)}
+          >
+            {tr("home.editTask")}
+          </button>
+        )}
+        {task.Status === "running" && (
+          <button
+            type="button"
+            className="codex-action-button codex-action-button-primary"
+            onClick={() => void onOpenTaskDetail(task)}
+          >
+            {tr("home.viewLiveOutput")}
+          </button>
+        )}
+        {(task.Status === "failed" || task.Status === "blocked") && (
+          <>
+            <button
+              type="button"
+              className="codex-action-button"
+              onClick={() => void onRetryTask(task.ID)}
+            >
+              {tr("home.retryTask")}
+            </button>
+          </>
+        )}
+        {options?.showDeleteAction && task.Status !== "running" && (
+          <button
+            type="button"
+            className="codex-action-button codex-action-button-danger"
+            onClick={() => void onDeleteTask(task)}
+          >
+            {tr("home.deleteTask")}
+          </button>
+        )}
+        {task.Status !== "done" && (
+          <button
+            type="button"
+            className="codex-action-button codex-action-button-primary"
+            onClick={() => void onMarkDone(task.ID)}
+          >
+            {tr("home.markDone")}
+          </button>
+        )}
+      </div>
+    </article>
+  );
 
   return (
     <div className={appPageClassName}>
@@ -1834,454 +2263,7 @@ function App() {
           <span>{toast.text}</span>
         </div>
       )}
-      {isTaskDetailPage ? (
-        <main className="task-detail-page" id="main-content">
-          <header className="home-topbar task-detail-homebar">
-            <div className="home-topbar-brand task-detail-homebar-brand">
-              <div className="home-topbar-brand-mark task-detail-homebar-mark" aria-hidden="true">
-                <TaskIcon className="home-topbar-brand-icon" />
-              </div>
-              <div className="task-detail-homebar-copy">
-                <strong>{tr("detail.title")}</strong>
-                <span>{selectedProjectName}</span>
-              </div>
-            </div>
-
-            <div className="home-topbar-divider" aria-hidden="true" />
-
-            <div className="task-detail-homebar-summary" title={selectedDetailTask?.ID || tr("common.dash")}>
-              <TaskIcon className="home-topbar-inline-icon" />
-              <div className="task-detail-homebar-summary-copy">
-                <strong>{selectedDetailTask?.Title || tr("common.dash")}</strong>
-                <span>{selectedDetailTask?.ID ? selectedDetailTask.ID.slice(0, 8) : tr("common.dash")}</span>
-              </div>
-              <span className={`status status-${selectedDetailTask?.Status || "pending"}`}>
-                {selectedDetailTask ? statusText[selectedDetailTask.Status] || selectedDetailTask.Status : tr("common.dash")}
-              </span>
-            </div>
-
-            <div className="home-topbar-side task-detail-homebar-side">
-              <div className="status-pill home-topbar-pill" title={healthText} aria-label={`${tr("common.systemRunning")} · ${healthText}`}>
-                <span className="status-dot" />
-                <strong>{tr("common.systemRunning")}</strong>
-              </div>
-              <div
-                className={`status-pill status-pill-mcp status-pill-${mcpStatus.state} home-topbar-pill`}
-                title={mcpStatus.message || mcpStateText[mcpStatus.state]}
-                aria-label={`${tr("detail.mcpStatusLabel")} ${mcpStateText[mcpStatus.state]}`}
-              >
-                <span className="status-dot" />
-                <strong>{mcpStateText[mcpStatus.state]}</strong>
-              </div>
-              <label className="sr-only" htmlFor="language-select-detail-compact">
-                {tr("language.label")}
-              </label>
-              <div className="home-topbar-language">
-                <GlobeIcon className="home-topbar-inline-icon" />
-                <select
-                  id="language-select-detail-compact"
-                  className="home-topbar-select"
-                  value={currentLanguage}
-                  onChange={(e) => onChangeLanguage(e.target.value)}
-                  aria-label={tr("language.label")}
-                >
-                  <option value="zh-CN">{tr("language.zhCN")}</option>
-                  <option value="en-US">{tr("language.enUS")}</option>
-                </select>
-              </div>
-              <button
-                type="button"
-                className="home-topbar-icon-button"
-                title={tr("systemLogs.navButton")}
-                aria-label={tr("systemLogs.navButton")}
-                onClick={() => setPage("systemLogs")}
-              >
-                <PanelIcon className="home-topbar-button-icon" />
-              </button>
-              <button
-                type="button"
-                className="home-topbar-icon-button"
-                title={tr("common.settings")}
-                aria-label={tr("common.settings")}
-                onClick={() => {
-                  setPage("settings");
-                  void refreshGlobalSettings();
-                }}
-              >
-                <SettingsIcon className="home-topbar-button-icon" />
-              </button>
-              <button type="button" className="home-secondary-action task-detail-homebar-back" onClick={closeTaskDetailModal}>
-                {tr("detail.backToTaskList")}
-              </button>
-            </div>
-          </header>
-
-          <section className="panel task-detail-header-panel">
-            <div className="task-detail-summary">
-              <div className="task-detail-summary-top">
-                <h3>{selectedDetailTask?.Title || tr("common.dash")}</h3>
-                <span className={`status status-${selectedDetailTask?.Status || "pending"}`}>
-                  {selectedDetailTask ? statusText[selectedDetailTask.Status] || selectedDetailTask.Status : tr("common.dash")}
-                </span>
-              </div>
-              <dl className="task-detail-meta-grid">
-                <div>
-                  <dt>{tr("detail.taskId")}</dt>
-                  <dd>{selectedDetailTask?.ID || tr("common.dash")}</dd>
-                </div>
-                <div>
-                  <dt>{tr("detail.provider")}</dt>
-                  <dd>{selectedDetailTask?.Provider || tr("common.unassigned")}</dd>
-                </div>
-                <div>
-                  <dt>{tr("detail.priority")}</dt>
-                  <dd>{selectedDetailTask?.Priority ?? tr("common.dash")}</dd>
-                </div>
-                <div>
-                  <dt>{tr("detail.projectId")}</dt>
-                  <dd>{selectedDetailTask?.ProjectID || tr("common.dash")}</dd>
-                </div>
-                <div>
-                  <dt>{tr("detail.updatedAt")}</dt>
-                  <dd>{formatDateTime(selectedDetailTask?.UpdatedAt)}</dd>
-                </div>
-                {selectedDetailTask?.Status === "failed" && (
-                  <>
-                    <div>
-                      <dt>{tr("detail.executionCount")}</dt>
-                      <dd>{selectedDetailTask?.RetryCount ?? 0}</dd>
-                    </div>
-                    <div>
-                      <dt>{tr("detail.nextRunAt")}</dt>
-                      <dd>{formatDateTime(selectedDetailTask?.NextRetryAt)}</dd>
-                    </div>
-                  </>
-                )}
-              </dl>
-            </div>
-            <p className="task-detail-desc">{selectedDetailTask?.Description || tr("common.noTaskDescription")}</p>
-          </section>
-
-          <section className="panel task-detail-content">
-            <div className="task-detail-columns">
-              <aside className="task-detail-history">
-                <h3>{tr("detail.historyTitle")}</h3>
-                {taskDetailRuns.length === 0 ? (
-                  <p className="empty">{tr("detail.noRunHistory")}</p>
-                ) : (
-                  <div className="run-history-list" role="listbox" aria-label={tr("detail.historyTitle")}>
-                    {taskDetailRuns.map((run) => (
-                      <button
-                        key={run.run_id}
-                        type="button"
-                        className={`run-history-item ${selectedRunID === run.run_id ? "run-history-item-active" : ""}`}
-                        onClick={() => setSelectedRunID(run.run_id)}
-                        aria-selected={selectedRunID === run.run_id}
-                        role="option"
-                      >
-                        <span className="run-history-main">
-                          #{run.attempt} · {statusText[run.status] || run.status}
-                        </span>
-                        <span className="run-history-sub">{formatDateTime(run.started_at)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </aside>
-
-              <section className="task-detail-logs">
-                <p className="run-info">{tr("detail.runInfo", { runId: selectedRunID || tr("common.none") })}</p>
-                <div className="logbox" aria-busy={selectedRunID !== "" && displayLogs.length === 0}>
-                  {!selectedRunID ? (
-                    <p className="empty">{tr("detail.noRunInstances")}</p>
-                  ) : displayLogs.length === 0 ? (
-                    <div className="empty">
-                      <p>{tr("detail.waitingLogs")}</p>
-                      {getSelectedRunInfo()?.result_summary && (
-                        <p>
-                          {tr("detail.summary")}: {getSelectedRunInfo()?.result_summary}
-                        </p>
-                      )}
-                      {getSelectedRunInfo()?.result_details && (
-                        <p>
-                          {tr("detail.details")}: {getSelectedRunInfo()?.result_details}
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="log-stream" ref={logStreamRef} aria-live="polite">
-                      {displayLogs.map((log) => (
-                        <div className="log-line" key={log.id}>
-                          <span className="log-time">{formatTime(log.ts)}</span>
-                          <span className="log-kind">{log.kind}</span>
-                          <span className="log-text" title={log.title}>
-                            {log.text}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </section>
-            </div>
-          </section>
-        </main>
-      ) : page === "project" ? (
-        <main className="settings-page" id="main-content">
-          <header className="settings-topbar">
-            <button type="button" className="btn-ghost settings-back" onClick={() => setPage("home")}>
-              {tr("project.backHome")}
-            </button>
-            <div className="settings-title-wrap">
-              <h2>{tr("project.title")}</h2>
-              <p>{tr("project.subtitle")}</p>
-            </div>
-            <div className="status-group">
-              {renderLanguageSwitcher("project")}
-              <div className="status-pill" title={healthText} aria-label={`${tr("common.systemRunning")} · ${healthText}`}>
-                <span className="status-dot" />
-                <strong>{tr("common.systemRunning")}</strong>
-              </div>
-              <div
-                className={`status-pill status-pill-mcp status-pill-${mcpStatus.state}`}
-                title={mcpStatus.message || mcpStateText[mcpStatus.state]}
-                aria-label={`${tr("detail.mcpStatusLabel")} ${mcpStateText[mcpStatus.state]}`}
-              >
-                <span className="status-dot" />
-                <strong>{mcpStateText[mcpStatus.state]}</strong>
-              </div>
-            </div>
-          </header>
-
-          <section className="panel settings-panel">
-            <div className="actions-header">
-              <h2>{tr("project.projectTitle")}</h2>
-              <div className="actions">
-                <button
-                  type="submit"
-                  form="project-settings-form"
-                  disabled={!selectedProjectID || savingProjectAIConfig}
-                >
-                  {savingProjectAIConfig ? tr("common.saving") : tr("project.saveProjectSettings")}
-                </button>
-                <button type="button" className="btn-danger" onClick={onDeleteProject} disabled={!selectedProjectID}>
-                  {tr("project.deleteProject")}
-                </button>
-              </div>
-            </div>
-            <form id="project-settings-form" className="form settings-form" onSubmit={onSaveProjectAIConfig}>
-              {projectSettingsFormError && (
-                <p className="field-error" role="alert">
-                  {projectSettingsFormError}
-                </p>
-              )}
-              <label htmlFor="project-detail-select">{tr("home.currentProject")}</label>
-              <select
-                id="project-detail-select"
-                value={selectedProjectID}
-                onChange={(e) => onChangeProject(e.target.value)}
-              >
-                <option value="">{tr("home.selectProject")}</option>
-                {projects.map((project) => (
-                  <option key={project.ID} value={project.ID}>
-                    {project.Name}
-                  </option>
-                ))}
-              </select>
-
-              <label htmlFor="project-detail-name">{tr("project.projectName")}</label>
-              <input
-                id="project-detail-name"
-                value={projectEditName}
-                onChange={(e) => {
-                  setProjectEditName(e.target.value);
-                  setProjectSettingsFormError("");
-                }}
-                placeholder={tr("modal.projectNamePlaceholder")}
-                disabled={!selectedProjectID}
-              />
-
-              <p className="run-info">
-                {selectedProjectID
-                  ? tr("project.projectPathValue", {
-                      path: selectedProject?.Path || tr("home.projectPathNotFound"),
-                    })
-                  : tr("project.projectRequiredHint")}
-              </p>
-
-              <label htmlFor="project-detail-provider">{tr("home.defaultProvider")}</label>
-              <select
-                id="project-detail-provider"
-                value={projectDefaultProvider}
-                onChange={(e) => {
-                  setProjectDefaultProvider(e.target.value);
-                  setProjectSettingsFormError("");
-                }}
-                disabled={!selectedProjectID}
-              >
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-              </select>
-
-              <label htmlFor="project-detail-failure-policy">{tr("project.failurePolicy")}</label>
-              <select
-                id="project-detail-failure-policy"
-                value={projectFailurePolicy}
-                onChange={(e) => {
-                  setProjectFailurePolicy(e.target.value);
-                  setProjectSettingsFormError("");
-                }}
-                disabled={!selectedProjectID}
-              >
-                <option value="block">{tr("project.failurePolicyBlock")}</option>
-                <option value="continue">{tr("project.failurePolicyContinue")}</option>
-              </select>
-              <p className="run-info">
-                {projectFailurePolicy === "continue"
-                  ? tr("project.failurePolicyContinueHint")
-                  : tr("project.failurePolicyBlockHint")}
-              </p>
-
-              <label htmlFor="project-detail-model">{tr("home.modelOptional")}</label>
-              <input
-                id="project-detail-model"
-                value={projectModel}
-                onChange={(e) => {
-                  setProjectModel(e.target.value);
-                  setProjectSettingsFormError("");
-                }}
-                placeholder={tr("home.modelPlaceholder")}
-                disabled={!selectedProjectID}
-              />
-
-              <label htmlFor="project-detail-system-prompt">{tr("project.projectSystemPrompt")}</label>
-              <textarea
-                id="project-detail-system-prompt"
-                value={projectSystemPrompt}
-                onChange={(e) => {
-                  setProjectSystemPrompt(e.target.value);
-                  setProjectSettingsFormError("");
-                }}
-                placeholder={tr("project.projectSystemPromptPlaceholder")}
-                disabled={!selectedProjectID}
-              />
-              <p className="run-info">{tr("project.projectPersistenceHint")}</p>
-            </form>
-          </section>
-        </main>
-      ) : page === "settings" ? (
-        <main className="settings-page" id="main-content">
-          <header className="settings-topbar">
-            <button type="button" className="btn-ghost settings-back" onClick={() => setPage("home")}>
-              {tr("settings.backHome")}
-            </button>
-            <div className="settings-title-wrap">
-              <h2>{tr("settings.title")}</h2>
-              <p>{tr("settings.subtitle")}</p>
-            </div>
-            <div className="status-group">
-              {renderLanguageSwitcher("settings")}
-              <div className="status-pill" title={healthText} aria-label={`${tr("common.systemRunning")} · ${healthText}`}>
-                <span className="status-dot" />
-                <strong>{tr("common.systemRunning")}</strong>
-              </div>
-              <div
-                className={`status-pill status-pill-mcp status-pill-${mcpStatus.state}`}
-                title={mcpStatus.message || mcpStateText[mcpStatus.state]}
-                aria-label={`${tr("detail.mcpStatusLabel")} ${mcpStateText[mcpStatus.state]}`}
-              >
-                <span className="status-dot" />
-                <strong>{mcpStateText[mcpStatus.state]}</strong>
-              </div>
-            </div>
-          </header>
-
-          <section className="panel settings-panel">
-            <div className="actions-header">
-              <h2>{tr("settings.telegramTitle")}</h2>
-              <button type="submit" form="global-settings-form" disabled={savingGlobalSettings}>
-                {savingGlobalSettings ? tr("common.saving") : tr("settings.saveSettings")}
-              </button>
-            </div>
-            <form id="global-settings-form" className="form settings-form" onSubmit={onSaveGlobalSettings}>
-              {settingsFormError && (
-                <p className="field-error" role="alert">
-                  {settingsFormError}
-                </p>
-              )}
-              <label className="checkbox-row" htmlFor="telegram-enabled">
-                <input
-                  id="telegram-enabled"
-                  type="checkbox"
-                  checked={telegramEnabled}
-                  onChange={(e) => {
-                    setTelegramEnabled(e.target.checked);
-                    setSettingsFormError("");
-                  }}
-                />
-                <span>{tr("settings.enableTelegram")}</span>
-              </label>
-
-              <label htmlFor="telegram-token">{tr("settings.botToken")}</label>
-              <input
-                id="telegram-token"
-                type="password"
-                value={telegramBotToken}
-                onChange={(e) => {
-                  setTelegramBotToken(e.target.value);
-                  setSettingsFormError("");
-                }}
-                placeholder={tr("settings.botTokenPlaceholder")}
-              />
-
-              <label htmlFor="telegram-chat-ids">{tr("settings.chatIDs")}</label>
-              <input
-                id="telegram-chat-ids"
-                value={telegramChatIDs}
-                onChange={(e) => {
-                  setTelegramChatIDs(e.target.value);
-                  setSettingsFormError("");
-                }}
-                placeholder={tr("settings.chatIDsPlaceholder")}
-              />
-
-              <label htmlFor="telegram-poll-timeout">{tr("settings.pollTimeout")}</label>
-              <input
-                id="telegram-poll-timeout"
-                type="number"
-                min={1}
-                max={120}
-                value={telegramPollTimeout}
-                onChange={(e) => {
-                  setTelegramPollTimeout(Number(e.target.value));
-                  setSettingsFormError("");
-                }}
-                aria-invalid={isPollTimeoutInvalid}
-              />
-
-              <label htmlFor="telegram-proxy-url">{tr("settings.proxyURL")}</label>
-              <input
-                id="telegram-proxy-url"
-                value={telegramProxyURL}
-                onChange={(e) => {
-                  setTelegramProxyURL(e.target.value);
-                  setSettingsFormError("");
-                }}
-                placeholder={tr("settings.proxyPlaceholder")}
-              />
-
-              <label htmlFor="system-prompt">{tr("settings.systemPrompt")}</label>
-              <textarea
-                id="system-prompt"
-                value={systemPrompt}
-                readOnly
-                placeholder={tr("settings.systemPromptPlaceholder")}
-              />
-              <p className="run-info">{tr("settings.persistenceHint")}</p>
-            </form>
-          </section>
-        </main>
-      ) : page === "systemLogs" ? (
+      {page === "systemLogs" ? (
         <main className="system-logs-page" id="main-content">
           <header className="settings-topbar">
             <button type="button" className="btn-ghost settings-back" onClick={() => setPage("home")}>
@@ -2383,7 +2365,7 @@ function App() {
                             {log.task_title || tr("common.unknown")} · {log.run_id ? log.run_id.slice(0, 8) : tr("common.none")}
                           </span>
                         </div>
-                        <pre className="system-log-text" title={log.payload}>
+                        <pre className="system-log-text">
                           {formatSystemLogPayload(log.payload)}
                         </pre>
                       </article>
@@ -2395,86 +2377,49 @@ function App() {
           </section>
         </main>
       ) : (
-        <main className="home-page home-dashboard" id="main-content">
-          <header className="home-topbar">
-            <div className="home-topbar-brand">
-              <div className="home-topbar-brand-mark" aria-hidden="true">
-                <LogoIcon className="home-topbar-brand-icon" />
-              </div>
-              <strong>{tr("home.appTitle")}</strong>
-            </div>
+        <main className="home-page home-codex-layout" id="main-content">
+          <section className="codex-shell">
+            <aside className="codex-sidebar" aria-label={tr("home.currentProject")}>
+              <header className="codex-sidebar-header">
+                <strong>{tr("home.appTitle")}</strong>
+                <span>{tr("home.projectCount")} · {projects.length}</span>
+              </header>
 
-            <div className="home-topbar-divider" aria-hidden="true" />
+              <div className="codex-sidebar-runtime">
+                <p className="codex-runtime-line" title={healthText}>
+                  <span className="codex-runtime-dot codex-runtime-dot-ok" aria-hidden="true" />
+                  <span>{tr("common.systemRunning")}</span>
+                </p>
+                <p className="codex-runtime-line" title={mcpStatus.message || mcpStateText[mcpStatus.state]}>
+                  <span className={`codex-runtime-dot codex-runtime-dot-${mcpStatus.state}`} aria-hidden="true" />
+                  <span>{mcpStateText[mcpStatus.state]}</span>
+                </p>
+              </div>
 
-            <div className="home-topbar-project">
-              <label className="sr-only" htmlFor="project-select">
-                {tr("home.currentProject")}
-              </label>
-              <div className="home-topbar-project-select">
-                <FolderIcon className="home-topbar-inline-icon" />
-                <select
-                  id="project-select"
-                  className="home-topbar-select"
-                  value={selectedProjectID}
-                  onChange={(e) => onChangeProject(e.target.value)}
-                  aria-label={tr("home.currentProject")}
-                >
-                  <option value="">{tr("home.selectProject")}</option>
-                  {projects.map((project) => (
-                    <option key={project.ID} value={project.ID}>
-                      {project.Name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="home-topbar-side">
-              <div className="status-pill home-topbar-pill" title={healthText} aria-label={`${tr("common.systemRunning")} · ${healthText}`}>
-                <span className="status-dot" />
-                <strong>{tr("common.systemRunning")}</strong>
-              </div>
-              <div
-                className={`status-pill status-pill-mcp status-pill-${mcpStatus.state} home-topbar-pill`}
-                title={mcpStatus.message || mcpStateText[mcpStatus.state]}
-                aria-label={`${tr("detail.mcpStatusLabel")} ${mcpStateText[mcpStatus.state]}`}
-              >
-                <span className="status-dot" />
-                <strong>{mcpStateText[mcpStatus.state]}</strong>
-              </div>
-              <label className="sr-only" htmlFor="language-select-home-compact">
-                {tr("language.label")}
-              </label>
-              <div className="home-topbar-language">
-                <GlobeIcon className="home-topbar-inline-icon" />
-                <select
-                  id="language-select-home-compact"
-                  className="home-topbar-select"
-                  value={currentLanguage}
-                  onChange={(e) => onChangeLanguage(e.target.value)}
-                  aria-label={tr("language.label")}
-                >
-                  <option value="zh-CN">{tr("language.zhCN")}</option>
-                  <option value="en-US">{tr("language.enUS")}</option>
-                </select>
-              </div>
-              <div className="home-topbar-actions">
-                <button type="button" className="home-primary-action" onClick={openProjectModal}>
+              <div className="codex-sidebar-actions">
+                <button type="button" className="codex-action-button codex-action-button-primary" onClick={openProjectModal}>
                   <PlusIcon className="home-topbar-button-icon" />
                   <span>{tr("home.newProject")}</span>
                 </button>
                 <button
                   type="button"
-                  className="home-secondary-action"
+                  className="codex-action-button"
                   onClick={openTaskModal}
                   disabled={!selectedProjectID}
                 >
                   <TaskIcon className="home-topbar-button-icon" />
                   <span>{tr("home.newTask")}</span>
                 </button>
+              </div>
+
+              <div className="codex-projects-head">
+                <div className="codex-projects-title">
+                  <FolderIcon className="home-topbar-inline-icon" />
+                  <span>{tr("home.currentProject")}</span>
+                </div>
                 <button
                   type="button"
-                  className="home-topbar-icon-button"
+                  className="codex-icon-button"
                   onClick={() => void refreshAll()}
                   disabled={loading}
                   title={loading ? tr("common.refreshing") : tr("common.refreshData")}
@@ -2483,197 +2428,524 @@ function App() {
                   <RefreshIcon className="home-topbar-button-icon" />
                 </button>
               </div>
-              <button
-                type="button"
-                className="home-topbar-icon-button"
-                title={tr("systemLogs.navButton")}
-                aria-label={tr("systemLogs.navButton")}
-                onClick={() => setPage("systemLogs")}
-              >
-                <PanelIcon className="home-topbar-button-icon" />
-              </button>
-              <button
-                type="button"
-                className="home-topbar-icon-button"
-                title={tr("common.settings")}
-                aria-label={tr("common.settings")}
-                onClick={() => {
-                  setPage("settings");
-                  void refreshGlobalSettings();
-                }}
-              >
-                <SettingsIcon className="home-topbar-button-icon" />
-              </button>
-            </div>
-          </header>
 
-          <section className="dispatch-console" aria-label={tr("home.runControlTitle")}>
-            <div className="dispatch-console-main">
-              <div className="dispatch-console-block">
-                <span className="dispatch-console-label">{tr("home.controlMode")}</span>
-                <button
-                  type="button"
-                  className={`dispatch-toggle ${autoRunEnabled ? "dispatch-toggle-enabled" : ""}`}
-                  onClick={onToggleAutoRun}
-                  disabled={!selectedProjectID}
-                  aria-pressed={autoRunEnabled}
-                >
-                  <span className="dispatch-toggle-track" aria-hidden="true">
-                    <span className="dispatch-toggle-thumb" />
-                  </span>
-                  <span>{dispatchModeText}</span>
-                </button>
-              </div>
-
-              <div className="dispatch-console-divider" aria-hidden="true" />
-
-              <div className="dispatch-console-block dispatch-console-status">
-                <span className="dispatch-console-label">{tr("home.lastStatus")}</span>
-                <p className="dispatch-status-text">
-                  <CheckCircleIcon className="dispatch-status-icon" />
-                  <span>{dispatchStatusText}</span>
-                </p>
-              </div>
-            </div>
-
-            <div className="dispatch-console-actions">
-              <button type="button" className="dispatch-console-button" onClick={onDispatch} disabled={!selectedProjectID}>
-                <PlayIcon className="home-topbar-button-icon" />
-                <span>{tr("home.dispatchOnce")}</span>
-              </button>
-            </div>
-          </section>
-
-          <section className="panel dashboard-task-panel">
-            <div className="dashboard-section-header">
-              <div className="dashboard-section-copy">
-                <span className="dashboard-section-kicker">{selectedProjectName}</span>
-                <h2>{tr("home.taskListTitle", { count: tasks.length })}</h2>
-                <p>{selectedProjectPath}</p>
-              </div>
-              <div className="actions">
-                <button type="button" className="btn-secondary" onClick={() => void refreshAll()} disabled={loading}>
-                  {loading ? tr("common.refreshing") : tr("common.refreshData")}
-                </button>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={() => setPage("project")}
-                  disabled={!selectedProjectID}
-                >
-                  {tr("home.projectDetail")}
-                </button>
-              </div>
-            </div>
-            {loading ? (
-              <p className="empty empty-state">{tr("home.loadingTasks")}</p>
-            ) : tasks.length === 0 ? (
-              <p className="empty empty-state">{tr("home.noTasks")}</p>
-            ) : (
-              <div className="task-list dashboard-task-list">
-                {orderedTasks.map((task) => (
-                  <article
-                    className={`task-card ${task.Status === "running" || runningTaskIDs.has(task.ID) ? "task-card-running" : ""}`}
-                    key={task.ID}
-                  >
-                    <div className="task-card-header">
-                      <div className="task-card-title-wrap">
-                        <h3>{task.Title}</h3>
-                        <p className="task-desc">{task.Description}</p>
-                      </div>
-                      <span className={`status status-${task.Status}`} aria-label={`${tr("detail.status")} ${statusText[task.Status] || task.Status}`}>
-                        {statusText[task.Status] || task.Status}
-                      </span>
-                    </div>
-                    <dl className="task-meta" aria-label={tr("home.taskMetadata")}>
-                      <div className="task-meta-item">
-                        <dt>{tr("detail.priority")}</dt>
-                        <dd>
-                          <span className="badge badge-priority">{tr("home.priorityBadge", { priority: task.Priority })}</span>
-                        </dd>
-                      </div>
-                      <div className="task-meta-item">
-                        <dt>{tr("detail.provider")}</dt>
-                        <dd>
-                          <span className="badge badge-provider">{task.Provider || tr("common.unassigned")}</span>
-                        </dd>
-                      </div>
-                      <div className="task-meta-item">
-                        <dt>{tr("detail.updatedAt")}</dt>
-                        <dd>{formatDateTime(task.UpdatedAt)}</dd>
-                      </div>
-                      {task.Status === "failed" && (
-                        <>
-                          <div className="task-meta-item">
-                            <dt>{tr("detail.executionCount")}</dt>
-                            <dd>{task.RetryCount ?? 0}</dd>
-                          </div>
-                          <div className="task-meta-item">
-                            <dt>{tr("detail.nextRunAt")}</dt>
-                            <dd>{formatDateTime(task.NextRetryAt)}</dd>
-                          </div>
-                        </>
-                      )}
-                    </dl>
-                    <div className="task-card-actions">
-                      <button type="button" className="btn-secondary" onClick={() => void onOpenTaskDetail(task)}>
-                        {tr("home.openTaskDetail")}
+              <div className="codex-project-list" role="listbox" aria-label={tr("home.currentProject")}>
+                {projects.length === 0 ? (
+                  <p className="empty empty-state">{tr("home.selectProjectFirst")}</p>
+                ) : (
+                  projects.map((project) => {
+                    const isActive = project.ID === selectedProjectID;
+                    const projectPathText = formatProjectPathForSidebar(project.Path, tr("home.projectPathNotFound"));
+                    return (
+                      <button
+                        key={project.ID}
+                        type="button"
+                        className={`codex-project-item ${isActive ? "codex-project-item-active" : ""}`}
+                        onClick={() => onChangeProject(project.ID)}
+                        aria-selected={isActive}
+                      >
+                        <span className="codex-project-item-name">{project.Name}</span>
+                        <span className="codex-project-item-path" title={project.Path || tr("home.projectPathNotFound")}>
+                          {projectPathText}
+                        </span>
+                        <span className="codex-project-item-meta">{project.DefaultProvider || tr("common.unassigned")}</span>
                       </button>
-                      {task.Status !== "running" && (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => openEditTaskModal(task)}
-                        >
-                          {tr("home.editTask")}
-                        </button>
-                      )}
-                      {task.Status === "running" && (
-                        <button
-                          type="button"
-                          className="btn-live"
-                          onClick={() => void onOpenTaskDetail(task)}
-                        >
-                          {tr("home.viewLiveOutput")}
-                        </button>
-                      )}
-                      {(task.Status === "failed" || task.Status === "blocked") && (
-                        <>
-                          <button
-                            type="button"
-                            className="btn-live"
-                            onClick={() => void onOpenTaskDetail(task)}
-                          >
-                            {tr("home.viewFailedLogs")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void onRetryTask(task.ID)}
-                          >
-                            {tr("home.retryTask")}
-                          </button>
-                        </>
-                      )}
-                      {task.Status !== "running" && (
-                        <button
-                          type="button"
-                          className="btn-danger"
-                          onClick={() => void onDeleteTask(task)}
-                        >
-                          {tr("home.deleteTask")}
-                        </button>
-                      )}
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="codex-sidebar-footer">
+                <div className="codex-sidebar-language">
+                  <label className="sr-only" htmlFor="language-select-sidebar">
+                    {tr("language.label")}
+                  </label>
+                  <GlobeIcon className="home-topbar-inline-icon" />
+                  <select
+                    id="language-select-sidebar"
+                    value={currentLanguage}
+                    onChange={(e) => onChangeLanguage(e.target.value)}
+                    aria-label={tr("language.label")}
+                  >
+                    <option value="zh-CN">{tr("language.zhCN")}</option>
+                    <option value="en-US">{tr("language.enUS")}</option>
+                  </select>
+                </div>
+                <div className="codex-sidebar-footer-actions">
+                  <button
+                    type="button"
+                    className="codex-icon-button"
+                    title={tr("systemLogs.navButton")}
+                    aria-label={tr("systemLogs.navButton")}
+                    onClick={() => setPage("systemLogs")}
+                  >
+                    <PanelIcon className="home-topbar-button-icon" />
+                  </button>
+                  <button
+                    type="button"
+                    className="codex-icon-button"
+                    title={tr("common.settings")}
+                    aria-label={tr("common.settings")}
+                    onClick={() => {
+                      setPage("settings");
+                      void refreshGlobalSettings();
+                    }}
+                  >
+                    <SettingsIcon className="home-topbar-button-icon" />
+                  </button>
+                </div>
+              </div>
+            </aside>
+
+            <section className="codex-main">
+              {isTaskDetailPage ? (
+                <>
+                  <header className="codex-main-toolbar">
+                    <div className="codex-main-title">
+                      <h2>{tr("detail.title")}</h2>
+                    </div>
+                    <div className="codex-main-actions">
+                      <button type="button" className="codex-action-button" onClick={closeTaskDetailModal}>
+                        {tr("detail.backToTaskList")}
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="codex-main-meta">
+                    <span>{tr("detail.title")}</span>
+                    <span>{selectedDetailTask?.ID?.slice(0, 8) || tr("common.dash")}</span>
+                    <span>{statusText[selectedDetailTask?.Status || "pending"] || selectedDetailTask?.Status || tr("common.dash")}</span>
+                  </div>
+
+                  {selectedDetailTask ? (
+                    <div className="codex-task-list codex-task-list-single">
+                      {renderTaskRow(selectedDetailTask, { showDeleteAction: true, showOpenDetailAction: false })}
+                    </div>
+                  ) : (
+                    <p className="empty empty-state">{tr("detail.noTaskDetailData")}</p>
+                  )}
+
+                  <div className="codex-main-detail">
+                    <section className="codex-detail-block task-detail-content">
+                      <div className="task-detail-columns">
+                        <aside className="task-detail-history">
+                          <h3>{tr("detail.historyTitle")}</h3>
+                          {taskDetailRuns.length === 0 ? (
+                            <p className="empty">{tr("detail.noRunHistory")}</p>
+                          ) : (
+                            <div className="run-history-list" role="listbox" aria-label={tr("detail.historyTitle")}>
+                              {taskDetailRuns.map((run) => (
+                                <button
+                                  key={run.run_id}
+                                  type="button"
+                                  className={`run-history-item ${selectedRunID === run.run_id ? "run-history-item-active" : ""}`}
+                                  onClick={() => setSelectedRunID(run.run_id)}
+                                  aria-selected={selectedRunID === run.run_id}
+                                  role="option"
+                                >
+                                  <span className="run-history-main">
+                                    #{run.attempt} · {statusText[run.status] || run.status}
+                                  </span>
+                                  <span className="run-history-sub">{formatDateTime(run.started_at)}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </aside>
+
+                        <section className="task-detail-logs">
+                          <div className="logbox task-detail-logbox" aria-busy={selectedRunID !== "" && displayLogs.length === 0}>
+                            {!selectedRunID ? (
+                              <p className="empty">{tr("detail.noRunInstances")}</p>
+                            ) : displayLogs.length === 0 ? (
+                              <div className="empty">
+                                <p>{tr("detail.waitingLogs")}</p>
+                                {getSelectedRunInfo()?.result_summary && (
+                                  <p>
+                                    {tr("detail.summary")}: {getSelectedRunInfo()?.result_summary}
+                                  </p>
+                                )}
+                                {getSelectedRunInfo()?.result_details && (
+                                  <p>
+                                    {tr("detail.details")}: {getSelectedRunInfo()?.result_details}
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="log-stream" ref={logStreamRef} aria-live="polite">
+                                {displayLogs.map((log) => {
+                                  const { channel } = splitLogKind(log.kind);
+                                  const tone = resolveLogTone(log.kind);
+                                  const channelClass = toLogTokenClass(channel);
+                                  const channelLabel = localizeLogChannel(channel, tr);
+                                  const semanticText = log.text.trim() || log.title.trim() || tr("common.dash");
+                                  const isExpanded = Boolean(expandedLogIDs[log.id]);
+                                  const canExpand = isLongLogText(semanticText);
+                                  const displayText = isExpanded ? semanticText : getCollapsedLogText(semanticText);
+                                  const rawVisible = Boolean(rawLogVisibleIDs[log.id]);
+                                  const rawText = formatRunLogPayload(log.title || "");
+                                  return (
+                                    <article className={`log-entry log-entry-${tone}`} key={log.id}>
+                                      <header className="log-entry-head">
+                                        <div className="log-entry-meta">
+                                          <time className="log-entry-time" dateTime={log.ts}>
+                                            {formatTime(log.ts)}
+                                          </time>
+                                          <span className={`log-entry-badge log-entry-badge-${channelClass}`}>
+                                            {channelLabel}
+                                          </span>
+                                        </div>
+                                      </header>
+                                      <pre className="log-entry-text">
+                                        {displayText}
+                                      </pre>
+                                      <div className="log-entry-actions">
+                                        {canExpand && (
+                                          <button
+                                            type="button"
+                                            className="log-entry-action"
+                                            onClick={() => toggleLogExpanded(log.id)}
+                                          >
+                                            {isExpanded ? tr("detail.collapseLog") : tr("detail.expandLog")}
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          className="log-entry-action"
+                                          onClick={() => toggleRawLogVisible(log.id)}
+                                        >
+                                          {rawVisible ? tr("detail.hideRawLog") : tr("detail.viewRawLog")}
+                                        </button>
+                                      </div>
+                                      {rawVisible && (
+                                        <div className="log-entry-raw-wrap">
+                                          <p className="log-entry-raw-title">{tr("detail.rawLog")}</p>
+                                          <pre className="log-entry-raw">
+                                            {rawText || tr("common.dash")}
+                                          </pre>
+                                        </div>
+                                      )}
+                                    </article>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </section>
+                      </div>
+                    </section>
+                  </div>
+                </>
+              ) : page === "project" ? (
+                <>
+                  <header className="codex-main-toolbar">
+                    <div className="codex-main-title">
+                      <h2>{tr("project.title")}</h2>
+                      <p>{tr("project.subtitle")}</p>
+                    </div>
+                    <div className="codex-main-actions">
+                      <button type="button" className="codex-action-button" onClick={() => setPage("home")}>
+                        {tr("project.backHome")}
+                      </button>
+                      <button
+                        type="submit"
+                        className="codex-action-button codex-action-button-dark"
+                        form="project-settings-form"
+                        disabled={!selectedProjectID || savingProjectAIConfig}
+                      >
+                        {savingProjectAIConfig ? tr("common.saving") : tr("project.saveProjectSettings")}
+                      </button>
                       <button
                         type="button"
-                        onClick={() => void onMarkDone(task.ID)}
+                        className="codex-action-button codex-action-button-danger"
+                        onClick={onDeleteProject}
+                        disabled={!selectedProjectID}
                       >
-                        {tr("home.markDone")}
+                        {tr("project.deleteProject")}
                       </button>
                     </div>
-                  </article>
-                ))}
-              </div>
-            )}
+                  </header>
+
+                  <form id="project-settings-form" className="form settings-form codex-main-form" onSubmit={onSaveProjectAIConfig}>
+                    {projectSettingsFormError && (
+                      <p className="field-error" role="alert">
+                        {projectSettingsFormError}
+                      </p>
+                    )}
+
+                    <label htmlFor="project-detail-name">{tr("project.projectName")}</label>
+                    <input
+                      id="project-detail-name"
+                      value={projectEditName}
+                      onChange={(e) => {
+                        setProjectEditName(e.target.value);
+                        setProjectSettingsFormError("");
+                      }}
+                      placeholder={tr("modal.projectNamePlaceholder")}
+                      disabled={!selectedProjectID}
+                    />
+
+                    <p className="run-info">
+                      {selectedProjectID
+                        ? tr("project.projectPathValue", {
+                            path: selectedProject?.Path || tr("home.projectPathNotFound"),
+                          })
+                        : tr("project.projectRequiredHint")}
+                    </p>
+
+                    <label htmlFor="project-detail-provider">{tr("home.defaultProvider")}</label>
+                    <select
+                      id="project-detail-provider"
+                      value={projectDefaultProvider}
+                      onChange={(e) => {
+                        setProjectDefaultProvider(e.target.value);
+                        setProjectSettingsFormError("");
+                      }}
+                      disabled={!selectedProjectID}
+                    >
+                      <option value="codex">codex</option>
+                      <option value="claude">claude</option>
+                    </select>
+
+                    <label htmlFor="project-detail-failure-policy">{tr("project.failurePolicy")}</label>
+                    <select
+                      id="project-detail-failure-policy"
+                      value={projectFailurePolicy}
+                      onChange={(e) => {
+                        setProjectFailurePolicy(e.target.value);
+                        setProjectSettingsFormError("");
+                      }}
+                      disabled={!selectedProjectID}
+                    >
+                      <option value="block">{tr("project.failurePolicyBlock")}</option>
+                      <option value="continue">{tr("project.failurePolicyContinue")}</option>
+                    </select>
+                    <p className="run-info">
+                      {projectFailurePolicy === "continue"
+                        ? tr("project.failurePolicyContinueHint")
+                        : tr("project.failurePolicyBlockHint")}
+                    </p>
+
+                    <label htmlFor="project-detail-model">{tr("home.modelOptional")}</label>
+                    <input
+                      id="project-detail-model"
+                      value={projectModel}
+                      onChange={(e) => {
+                        setProjectModel(e.target.value);
+                        setProjectSettingsFormError("");
+                      }}
+                      placeholder={tr("home.modelPlaceholder")}
+                      disabled={!selectedProjectID}
+                    />
+
+                    <label htmlFor="project-detail-system-prompt">{tr("project.projectSystemPrompt")}</label>
+                    <textarea
+                      id="project-detail-system-prompt"
+                      value={projectSystemPrompt}
+                      onChange={(e) => {
+                        setProjectSystemPrompt(e.target.value);
+                        setProjectSettingsFormError("");
+                      }}
+                      placeholder={tr("project.projectSystemPromptPlaceholder")}
+                      disabled={!selectedProjectID}
+                    />
+                    <label className="checkbox-row" htmlFor="project-frontend-screenshot-report-enabled">
+                      <input
+                        id="project-frontend-screenshot-report-enabled"
+                        type="checkbox"
+                        checked={projectFrontendScreenshotReportEnabled}
+                        onChange={(e) => {
+                          setProjectFrontendScreenshotReportEnabled(e.target.checked);
+                          setProjectSettingsFormError("");
+                        }}
+                        disabled={!selectedProjectID}
+                      />
+                      <span>{tr("project.frontendScreenshotReportEnabled")}</span>
+                    </label>
+                    <p className="run-info run-info-warning">{tr("project.frontendScreenshotReportHint")}</p>
+                    <p className="run-info">{tr("project.projectPersistenceHint")}</p>
+                  </form>
+                </>
+              ) : page === "settings" ? (
+                <>
+                  <header className="codex-main-toolbar">
+                    <div className="codex-main-title">
+                      <h2>{tr("settings.title")}</h2>
+                      <p>{tr("settings.subtitle")}</p>
+                    </div>
+                    <div className="codex-main-actions">
+                      <button type="button" className="codex-action-button" onClick={() => setPage("home")}>
+                        {tr("settings.backHome")}
+                      </button>
+                      <button
+                        type="submit"
+                        className="codex-action-button codex-action-button-dark"
+                        form="global-settings-form"
+                        disabled={savingGlobalSettings}
+                      >
+                        {savingGlobalSettings ? tr("common.saving") : tr("settings.saveSettings")}
+                      </button>
+                    </div>
+                  </header>
+
+                  <form id="global-settings-form" className="form settings-form codex-main-form" onSubmit={onSaveGlobalSettings}>
+                    {settingsFormError && (
+                      <p className="field-error" role="alert">
+                        {settingsFormError}
+                      </p>
+                    )}
+                    <label className="checkbox-row" htmlFor="telegram-enabled">
+                      <input
+                        id="telegram-enabled"
+                        type="checkbox"
+                        checked={telegramEnabled}
+                        onChange={(e) => {
+                          setTelegramEnabled(e.target.checked);
+                          setSettingsFormError("");
+                        }}
+                      />
+                      <span>{tr("settings.enableTelegram")}</span>
+                    </label>
+
+                    <label htmlFor="telegram-token">{tr("settings.botToken")}</label>
+                    <input
+                      id="telegram-token"
+                      type="password"
+                      value={telegramBotToken}
+                      onChange={(e) => {
+                        setTelegramBotToken(e.target.value);
+                        setSettingsFormError("");
+                      }}
+                      placeholder={tr("settings.botTokenPlaceholder")}
+                    />
+
+                    <label htmlFor="telegram-chat-ids">{tr("settings.chatIDs")}</label>
+                    <input
+                      id="telegram-chat-ids"
+                      value={telegramChatIDs}
+                      onChange={(e) => {
+                        setTelegramChatIDs(e.target.value);
+                        setSettingsFormError("");
+                      }}
+                      placeholder={tr("settings.chatIDsPlaceholder")}
+                    />
+
+                    <label htmlFor="telegram-poll-timeout">{tr("settings.pollTimeout")}</label>
+                    <input
+                      id="telegram-poll-timeout"
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={telegramPollTimeout}
+                      onChange={(e) => {
+                        setTelegramPollTimeout(Number(e.target.value));
+                        setSettingsFormError("");
+                      }}
+                      aria-invalid={isPollTimeoutInvalid}
+                    />
+
+                    <label htmlFor="telegram-proxy-url">{tr("settings.proxyURL")}</label>
+                    <input
+                      id="telegram-proxy-url"
+                      value={telegramProxyURL}
+                      onChange={(e) => {
+                        setTelegramProxyURL(e.target.value);
+                        setSettingsFormError("");
+                      }}
+                      placeholder={tr("settings.proxyPlaceholder")}
+                    />
+
+                    <label htmlFor="system-prompt">{tr("settings.systemPrompt")}</label>
+                    <textarea
+                      id="system-prompt"
+                      value={systemPrompt}
+                      readOnly
+                      placeholder={tr("settings.systemPromptPlaceholder")}
+                    />
+                    <p className="run-info">{tr("settings.persistenceHint")}</p>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <header className="codex-main-toolbar codex-main-toolbar-home">
+                    <div className="codex-main-title">
+                      <h2>{tr("home.boardTitle")}</h2>
+                    </div>
+                    <div className="codex-main-actions">
+                      <button
+                        type="button"
+                        className={`dispatch-toggle codex-dispatch-toggle ${autoRunEnabled ? "dispatch-toggle-enabled" : ""}`}
+                        onClick={onToggleAutoRun}
+                        disabled={!selectedProjectID}
+                        title={dispatchModeText}
+                        aria-label={dispatchModeText}
+                        aria-pressed={autoRunEnabled}
+                      >
+                        <span className="dispatch-toggle-track" aria-hidden="true">
+                          <span className="dispatch-toggle-thumb" />
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="codex-action-button codex-action-button-dark"
+                        onClick={onDispatch}
+                        disabled={!selectedProjectID}
+                      >
+                        <PlayIcon className="home-topbar-button-icon" />
+                        <span>{tr("home.dispatchOnce")}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="codex-action-button"
+                        onClick={() => setPage("project")}
+                        disabled={!selectedProjectID}
+                      >
+                        {tr("home.projectDetail")}
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="codex-main-scroll">
+                    <div className="codex-main-meta codex-main-filter" role="group" aria-label={tr("home.taskFilterLabel")}>
+                      <button
+                        type="button"
+                        className={`codex-main-filter-button ${taskCompletionFilter === "incomplete" ? "is-active" : ""}`}
+                        onClick={() => setTaskCompletionFilter("incomplete")}
+                        aria-pressed={taskCompletionFilter === "incomplete"}
+                      >
+                        {tr("home.incompleteTasks", { count: groupedTasks.incomplete.length })}
+                      </button>
+                      <button
+                        type="button"
+                        className={`codex-main-filter-button ${taskCompletionFilter === "completed" ? "is-active" : ""}`}
+                        onClick={() => setTaskCompletionFilter("completed")}
+                        aria-pressed={taskCompletionFilter === "completed"}
+                      >
+                        {tr("home.completedTasks", { count: groupedTasks.completed.length })}
+                      </button>
+                    </div>
+                    <p className="codex-main-status">
+                      <CheckCircleIcon className="dispatch-status-icon" />
+                      <span>{dispatchStatusText}</span>
+                    </p>
+
+                    {loading ? (
+                      <p className="empty empty-state">{tr("home.loadingTasks")}</p>
+                    ) : tasks.length === 0 ? (
+                      <p className="empty empty-state">{tr("home.noTasks")}</p>
+                    ) : filteredTasks.length === 0 ? (
+                      <p className="empty empty-state">
+                        {taskCompletionFilter === "completed" ? tr("home.noCompletedTasks") : tr("home.noIncompleteTasks")}
+                      </p>
+                    ) : (
+                      <div className="codex-task-list">
+                        {filteredTasks.map((task) => renderTaskRow(task))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </section>
           </section>
 
           {showProjectModal && (
@@ -2724,8 +2996,8 @@ function App() {
                       setProjectFormError("");
                     }}
                   >
-                    <option value="claude">claude</option>
                     <option value="codex">codex</option>
+                    <option value="claude">claude</option>
                   </select>
                   <label htmlFor="project-failure-policy">{tr("project.failurePolicy")}</label>
                   <select
@@ -2880,5 +3152,3 @@ function App() {
 }
 
 export default App;
-
-

@@ -435,7 +435,7 @@ func TestMCPStatus_Disabled(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, "")
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
@@ -444,13 +444,44 @@ func TestMCPStatus_Disabled(t *testing.T) {
 	}
 }
 
-func TestMCPStatus_ConnectedByReportedEvent(t *testing.T) {
+func TestMCPStatus_ProjectRequired(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
 
 	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
+		DatabasePath:        filepath.Join(t.TempDir(), "test.db"),
+		RunClaudeOnDispatch: false,
+		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
+		EnableMCPCallback:   true,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	status, err := application.MCPStatus(ctx, "")
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	if status.State != "unknown" {
+		t.Fatalf("expected unknown, got %s", status.State)
+	}
+	if !strings.Contains(status.Message, "请选择项目") {
+		t.Fatalf("expected project required message, got %q", status.Message)
+	}
+}
+
+func TestMCPStatus_ClaudeConnectedByConfig(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{
+		HasAutoWork: true,
+	})
+
+	application, err := New(ctx, config.Config{
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		ClaudeBinary:        claudeBinary,
 		RunClaudeOnDispatch: false,
 		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
 		EnableMCPCallback:   true,
@@ -461,61 +492,35 @@ func TestMCPStatus_ConnectedByReportedEvent(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-connected-project",
-		Path: t.TempDir(),
+		Name:            "claude-mcp-project",
+		Path:            dir,
+		DefaultProvider: "claude",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-connected-task",
-		Description: "desc",
-		Provider:    "claude",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
 
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,finished_at,prompt_snapshot,result_summary,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-connected", task.ID, defaultClaudeAgentID, 1, "done", now, now, "prompt", "ok", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-connected", "run-mcp-connected", now, "mcp.report_result.applied", `{"run_status":"done","task_status":"done"}`); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
 	if status.State != "connected" {
 		t.Fatalf("expected connected, got %s", status.State)
 	}
-	if status.RunID != "run-mcp-connected" {
-		t.Fatalf("expected run id run-mcp-connected, got %s", status.RunID)
+	if !strings.Contains(status.Message, "Claude MCP 已配置") {
+		t.Fatalf("expected configured message, got %q", status.Message)
 	}
 }
 
-func TestMCPStatus_FailedByMissingCallbackSummary(t *testing.T) {
+func TestMCPStatus_ClaudeMissingAutoAdds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dir := t.TempDir()
+	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{})
 
 	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		ClaudeBinary:        claudeBinary,
 		RunClaudeOnDispatch: false,
 		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
 		EnableMCPCallback:   true,
@@ -526,119 +531,38 @@ func TestMCPStatus_FailedByMissingCallbackSummary(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-failed-project",
-		Path: t.TempDir(),
+		Name:            "claude-auto-add-project",
+		Path:            dir,
+		DefaultProvider: "claude",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-failed-task",
-		Description: "desc",
-		Provider:    "claude",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
 
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,finished_at,prompt_snapshot,result_summary,result_details,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-failed", task.ID, defaultClaudeAgentID, 1, "failed", now, now, "prompt",
-		"claude exited without mcp report_result callback", "process exit 0 but no MCP report was received", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
-	if err != nil {
-		t.Fatalf("mcp status: %v", err)
-	}
-	if status.State != "failed" {
-		t.Fatalf("expected failed, got %s", status.State)
-	}
-	if status.RunID != "run-mcp-failed" {
-		t.Fatalf("expected run id run-mcp-failed, got %s", status.RunID)
-	}
-}
-
-func TestMCPStatus_ConnectedRunningInitStatusOK(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-running-connected-project",
-		Path: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-running-connected-task",
-		Description: "desc",
-		Provider:    "codex",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-running-connected", task.ID, defaultCodexAgentID, 1, "running", now, "prompt", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	initLine := `{"type":"result","subtype":"init","mcp_servers":[{"name":"auto-work","status":"ok"}]}`
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-running-connected", "run-mcp-running-connected", now, "codex.stdout", initLine); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
 	if status.State != "connected" {
 		t.Fatalf("expected connected, got %s", status.State)
 	}
+	if !strings.Contains(status.Message, "已自动添加") {
+		t.Fatalf("expected auto-add message, got %q", status.Message)
+	}
 }
 
-func TestMCPStatus_FailedRunningInitStatusWithSpaces(t *testing.T) {
+func TestMCPStatus_ClaudeAutoAddFailureIncludesReason(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dir := t.TempDir()
+	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{
+		AddFails:  true,
+		AddReason: "permission denied",
+	})
 
 	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		ClaudeBinary:        claudeBinary,
 		RunClaudeOnDispatch: false,
 		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
 		EnableMCPCallback:   true,
@@ -649,110 +573,15 @@ func TestMCPStatus_FailedRunningInitStatusWithSpaces(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-running-failed-init-project",
-		Path: t.TempDir(),
+		Name:            "claude-auto-add-failed-project",
+		Path:            dir,
+		DefaultProvider: "claude",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-running-failed-init-task",
-		Description: "desc",
-		Provider:    "codex",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
 
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-running-failed-init", task.ID, defaultCodexAgentID, 1, "running", now, "prompt", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	initFailedLine := `{"type":"result","subtype":"init","mcp_servers":[{"name": "auto-work", "status": "failed"}]}`
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-running-failed-init", "run-mcp-running-failed-init", now, "codex.stdout", initFailedLine); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
-	if err != nil {
-		t.Fatalf("mcp status: %v", err)
-	}
-	if status.State != "failed" {
-		t.Fatalf("expected failed, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "status=failed") {
-		t.Fatalf("expected init failed reason in message, got %q", status.Message)
-	}
-}
-
-func TestMCPStatus_FailedRunningInitShowsDetailedReason(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-running-failed-project",
-		Path: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-running-failed-task",
-		Description: "desc",
-		Provider:    "claude",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-running-failed", task.ID, defaultClaudeAgentID, 1, "running", now, "prompt", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	failedLine := `2026-03-04T06:03:52.713Z [ERROR] MCP server "auto-work" Connection failed: permission denied`
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-running-failed", "run-mcp-running-failed", now, "claude.stdout", failedLine); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
@@ -760,17 +589,22 @@ VALUES(?,?,?,?,?)`,
 		t.Fatalf("expected failed, got %s", status.State)
 	}
 	if !strings.Contains(status.Message, "permission denied") {
-		t.Fatalf("expected detailed reason in message, got %q", status.Message)
+		t.Fatalf("expected add failure reason, got %q", status.Message)
 	}
 }
 
-func TestMCPStatus_FailedRunningUnknownServerShowsReason(t *testing.T) {
+func TestMCPStatus_CodexConnectedByConfig(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dir := t.TempDir()
+	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{
+		HasAutoWork: true,
+		WarnOnList:  true,
+	})
 
 	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		CodexBinary:         codexBinary,
 		RunClaudeOnDispatch: false,
 		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
 		EnableMCPCallback:   true,
@@ -781,62 +615,35 @@ func TestMCPStatus_FailedRunningUnknownServerShowsReason(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-unknown-server-project",
-		Path: t.TempDir(),
+		Name:            "codex-configured-project",
+		Path:            dir,
+		DefaultProvider: "codex",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-unknown-server-task",
-		Description: "desc",
-		Provider:    "codex",
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
 
-	rawDB, err := db.OpenSQLite(dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-unknown-server", task.ID, defaultCodexAgentID, 1, "running", now, "prompt", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	unknownLine := `{"type":"item.completed","item":{"id":"item_33","type":"mcp_tool_call","server":"todo","tool":"read_mcp_resource","arguments":{"server":"todo","uri":"todo://report_result"},"result":null,"error":{"message":"resources/read failed: unknown MCP server 'todo'"},"status":"failed"}}`
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-unknown-server", "run-mcp-unknown-server", now, "codex.stdout", unknownLine); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
-	if status.State != "failed" {
-		t.Fatalf("expected failed, got %s", status.State)
+	if status.State != "connected" {
+		t.Fatalf("expected connected, got %s", status.State)
 	}
-	if !strings.Contains(status.Message, "unknown MCP server 'todo'") {
-		t.Fatalf("expected unknown server reason in message, got %q", status.Message)
+	if !strings.Contains(status.Message, "Codex MCP 已配置") {
+		t.Fatalf("expected configured message, got %q", status.Message)
 	}
 }
 
-func TestMCPStatus_FailedMissingCallbackIncludesReason(t *testing.T) {
+func TestMCPStatus_CodexMissingAutoAdds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dir := t.TempDir()
+	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{})
 
 	application, err := New(ctx, config.Config{
-		DatabasePath:        dbPath,
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		CodexBinary:         codexBinary,
 		RunClaudeOnDispatch: false,
 		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
 		EnableMCPCallback:   true,
@@ -847,45 +654,57 @@ func TestMCPStatus_FailedMissingCallbackIncludesReason(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name: "mcp-callback-failed-project",
-		Path: t.TempDir(),
+		Name:            "codex-auto-add-project",
+		Path:            dir,
+		DefaultProvider: "codex",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task, err := application.CreateTask(ctx, CreateTaskRequest{
-		ProjectID:   project.ID,
-		Title:       "mcp-callback-failed-task",
-		Description: "desc",
-		Provider:    "claude",
+
+	status, err := application.MCPStatus(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	if status.State != "connected" {
+		t.Fatalf("expected connected, got %s", status.State)
+	}
+	if !strings.Contains(status.Message, "已自动添加") {
+		t.Fatalf("expected auto-add message, got %q", status.Message)
+	}
+}
+
+func TestMCPStatus_CodexAutoAddFailureIncludesReason(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{
+		AddFails:  true,
+		AddReason: "permission denied",
+	})
+
+	application, err := New(ctx, config.Config{
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		CodexBinary:         codexBinary,
+		RunClaudeOnDispatch: false,
+		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
+		EnableMCPCallback:   true,
 	})
 	if err != nil {
-		t.Fatalf("create task: %v", err)
+		t.Fatalf("new app: %v", err)
 	}
+	t.Cleanup(func() { _ = application.Close() })
 
-	rawDB, err := db.OpenSQLite(dbPath)
+	project, err := application.CreateProject(ctx, CreateProjectRequest{
+		Name:            "codex-auto-add-failed-project",
+		Path:            dir,
+		DefaultProvider: "codex",
+	})
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer rawDB.Close()
-
-	now := time.Now().UTC()
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,finished_at,prompt_snapshot,result_summary,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"run-mcp-callback-failed", task.ID, defaultClaudeAgentID, 1, "failed", now, now, "prompt",
-		"claude exited without mcp report_result callback", now, now); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	deniedLine := fmt.Sprintf(`{"type":"result","permission_denials":[{"tool_name":"mcp__auto-work__auto_work_report_result","tool_use_id":"call_123"}]}`)
-	if _, err := rawDB.ExecContext(ctx, `
-INSERT INTO run_events(id,run_id,ts,kind,payload)
-VALUES(?,?,?,?,?)`,
-		"evt-mcp-callback-failed", "run-mcp-callback-failed", now, "claude.stdout", deniedLine); err != nil {
-		t.Fatalf("insert event: %v", err)
+		t.Fatalf("create project: %v", err)
 	}
 
-	status, err := application.MCPStatus(ctx)
+	status, err := application.MCPStatus(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
@@ -893,6 +712,169 @@ VALUES(?,?,?,?,?)`,
 		t.Fatalf("expected failed, got %s", status.State)
 	}
 	if !strings.Contains(status.Message, "permission denied") {
-		t.Fatalf("expected reason included in message, got %q", status.Message)
+		t.Fatalf("expected add failure reason, got %q", status.Message)
 	}
+}
+
+type fakeClaudeOptions struct {
+	HasAutoWork bool
+	AddFails    bool
+	AddReason   string
+}
+
+type fakeCodexOptions struct {
+	HasAutoWork bool
+	AddFails    bool
+	AddReason   string
+	WarnOnList  bool
+}
+
+func writeFakeClaudeBinary(t *testing.T, dir string, opts fakeClaudeOptions) string {
+	t.Helper()
+	stateFile := filepath.Join(dir, "claude-auto-work.state")
+	if opts.HasAutoWork {
+		if err := os.WriteFile(stateFile, []byte("present\n"), 0o644); err != nil {
+			t.Fatalf("write claude state file: %v", err)
+		}
+	}
+	addReason := opts.AddReason
+	if addReason == "" {
+		addReason = "permission denied"
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+STATE_FILE=%q
+ADD_FAILS=%q
+ADD_REASON=%q
+
+if [ "$1" != "mcp" ]; then
+  echo "unsupported command: $1" >&2
+  exit 1
+fi
+shift
+
+case "$1" in
+  get)
+    shift
+    if [ "$1" != "auto-work" ]; then
+      echo "unexpected server: $1" >&2
+      exit 1
+    fi
+    if [ -f "$STATE_FILE" ]; then
+      echo "auto-work"
+      exit 0
+    fi
+    echo "No MCP server found with name: auto-work" >&2
+    exit 1
+    ;;
+  add)
+    shift
+    if [ "$1" = "--scope" ]; then
+      shift 2
+    fi
+    if [ "$1" = "--transport" ]; then
+      shift 2
+    fi
+    if [ "$1" != "auto-work" ]; then
+      echo "unexpected server: $1" >&2
+      exit 1
+    fi
+    if [ "$ADD_FAILS" = "1" ]; then
+      echo "$ADD_REASON" >&2
+      exit 1
+    fi
+    : > "$STATE_FILE"
+    echo "added"
+    ;;
+  *)
+    echo "unsupported mcp subcommand: $1" >&2
+    exit 1
+    ;;
+esac
+`, stateFile, boolString(opts.AddFails), addReason)
+	return writeExecutableScript(t, dir, "fake-claude.sh", script)
+}
+
+func writeFakeCodexBinary(t *testing.T, dir string, opts fakeCodexOptions) string {
+	t.Helper()
+	stateFile := filepath.Join(dir, "codex-auto-work.state")
+	if opts.HasAutoWork {
+		if err := os.WriteFile(stateFile, []byte("present\n"), 0o644); err != nil {
+			t.Fatalf("write codex state file: %v", err)
+		}
+	}
+	addReason := opts.AddReason
+	if addReason == "" {
+		addReason = "permission denied"
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+STATE_FILE=%q
+ADD_FAILS=%q
+ADD_REASON=%q
+WARN_ON_LIST=%q
+
+if [ "$1" != "mcp" ]; then
+  echo "unsupported command: $1" >&2
+  exit 1
+fi
+shift
+
+case "$1" in
+  list)
+    if [ "$WARN_ON_LIST" = "1" ]; then
+      echo "WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)" >&2
+    fi
+    if [ -f "$STATE_FILE" ]; then
+      printf '%%s\n' '[{"name":"auto-work","enabled":true,"disabled_reason":null}]'
+    else
+      printf '%%s\n' '[]'
+    fi
+    ;;
+  add)
+    shift
+    if [ "$1" != "--url" ]; then
+      echo "missing --url" >&2
+      exit 1
+    fi
+    shift
+    if [ "$1" = "" ]; then
+      echo "missing url value" >&2
+      exit 1
+    fi
+    shift
+    if [ "$1" != "auto-work" ]; then
+      echo "unexpected server: $1" >&2
+      exit 1
+    fi
+    if [ "$ADD_FAILS" = "1" ]; then
+      echo "$ADD_REASON" >&2
+      exit 1
+    fi
+    : > "$STATE_FILE"
+    echo "added"
+    ;;
+  *)
+    echo "unsupported mcp subcommand: $1" >&2
+    exit 1
+    ;;
+esac
+`, stateFile, boolString(opts.AddFails), addReason, boolString(opts.WarnOnList))
+	return writeExecutableScript(t, dir, "fake-codex.sh", script)
+}
+
+func writeExecutableScript(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write script %s: %v", name, err)
+	}
+	return path
+}
+
+func boolString(value bool) string {
+	if value {
+		return "1"
+	}
+	return "0"
 }

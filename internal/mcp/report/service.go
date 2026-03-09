@@ -127,24 +127,57 @@ func (s *Service) ReportResult(ctx context.Context, in ResultInput) (string, err
 }
 
 type CreateTaskItem struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Priority    int      `json:"priority"` // ignored: MCP batch create appends to queue tail automatically
-	DependsOn   []string `json:"depends_on"`
-	Provider    string   `json:"provider"` // ignored while pending; provider assigned when dispatch starts
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Priority    int    `json:"priority"` // ignored: MCP batch create appends to queue tail automatically
+	Provider    string `json:"provider"` // ignored while pending; provider assigned when dispatch starts
 }
 
 type CreateTasksInput struct {
-	Items       []CreateTaskItem `json:"items"`
-	ProjectID   string           `json:"project_id"`
-	ProjectName string           `json:"project_name"`
-	ProjectPath string           `json:"project_path"`
+	Items             []CreateTaskItem `json:"items"`
+	InsertAfterTaskID string           `json:"insert_after_task_id"`
+	ProjectID         string           `json:"project_id"`
+	ProjectName       string           `json:"project_name"`
+	ProjectPath       string           `json:"project_path"`
 }
 
 type CreateTasksOutputItem struct {
 	TaskID      string `json:"task_id"`
 	Title       string `json:"title"`
 	Priority    int    `json:"priority"`
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+}
+
+type UpdateTaskInput struct {
+	TaskID            string  `json:"task_id"`
+	Title             *string `json:"title"`
+	Description       *string `json:"description"`
+	InsertAfterTaskID string  `json:"insert_after_task_id"`
+	ProjectID         string  `json:"project_id"`
+	ProjectName       string  `json:"project_name"`
+	ProjectPath       string  `json:"project_path"`
+}
+
+type UpdateTaskOutput struct {
+	TaskID      string `json:"task_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+}
+
+type DeleteTaskInput struct {
+	TaskID      string `json:"task_id"`
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	ProjectPath string `json:"project_path"`
+}
+
+type DeleteTaskOutput struct {
+	TaskID      string `json:"task_id"`
 	ProjectID   string `json:"project_id"`
 	ProjectName string `json:"project_name"`
 }
@@ -195,37 +228,31 @@ func (s *Service) CreateTasks(ctx context.Context, in CreateTasksInput) ([]Creat
 		return nil, err
 	}
 
-	out := make([]CreateTasksOutputItem, 0, len(in.Items))
 	now := time.Now().UTC()
-	nextPriority, err := s.taskRepo.NextAppendPriority(ctx, project.ID, 100)
-	if err != nil {
-		return nil, err
-	}
+	createdTasks := make([]*domain.Task, 0, len(in.Items))
 	for _, item := range in.Items {
 		title := strings.TrimSpace(item.Title)
 		desc := strings.TrimSpace(item.Description)
 		if title == "" || desc == "" {
 			return nil, ErrInvalidInput
 		}
-		priority := nextPriority
-		nextPriority++
-
-		task := &domain.Task{
+		createdTasks = append(createdTasks, &domain.Task{
 			ID:          uuid.NewString(),
 			ProjectID:   project.ID,
 			Title:       title,
 			Description: desc,
-			Priority:    priority,
 			Status:      domain.TaskPending,
-			DependsOn:   dedupeStrings(item.DependsOn),
 			Provider:    "",
 			CreatedAt:   now,
 			UpdatedAt:   now,
-		}
-		if err := s.taskRepo.Create(ctx, task); err != nil {
-			return nil, err
-		}
+		})
+	}
+	if err := s.taskRepo.CreateBatchWithReorder(ctx, project.ID, createdTasks, in.InsertAfterTaskID); err != nil {
+		return nil, err
+	}
 
+	out := make([]CreateTasksOutputItem, 0, len(createdTasks))
+	for _, task := range createdTasks {
 		out = append(out, CreateTasksOutputItem{
 			TaskID:      task.ID,
 			Title:       task.Title,
@@ -237,8 +264,89 @@ func (s *Service) CreateTasks(ctx context.Context, in CreateTasksInput) ([]Creat
 
 	if run != nil {
 		_ = s.logEvent(ctx, run.ID, "mcp.create_tasks.applied", map[string]any{
-			"created_count": len(out),
-			"items":         out,
+			"created_count":        len(out),
+			"insert_after_task_id": strings.TrimSpace(in.InsertAfterTaskID),
+			"items":                out,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) UpdateTask(ctx context.Context, in UpdateTaskInput) (*UpdateTaskOutput, error) {
+	task, project, run, err := s.resolveTaskWithScope(ctx, in.TaskID, ProjectSelectorInput{
+		ProjectID:   in.ProjectID,
+		ProjectName: in.ProjectName,
+		ProjectPath: in.ProjectPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	updated := *task
+	if in.Title != nil {
+		title := strings.TrimSpace(*in.Title)
+		if title == "" {
+			return nil, ErrInvalidInput
+		}
+		updated.Title = title
+	}
+	if in.Description != nil {
+		desc := strings.TrimSpace(*in.Description)
+		if desc == "" {
+			return nil, ErrInvalidInput
+		}
+		updated.Description = desc
+	}
+	if strings.TrimSpace(in.InsertAfterTaskID) == updated.ID {
+		return nil, ErrInvalidInput
+	}
+	if err := s.taskRepo.UpdateNonRunningTaskWithReorder(ctx, &updated, in.InsertAfterTaskID); err != nil {
+		return nil, err
+	}
+
+	updatedTask, err := s.taskRepo.GetByID(ctx, updated.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := &UpdateTaskOutput{
+		TaskID:      updatedTask.ID,
+		Title:       updatedTask.Title,
+		Description: updatedTask.Description,
+		Status:      string(updatedTask.Status),
+		Priority:    updatedTask.Priority,
+		ProjectID:   updatedTask.ProjectID,
+		ProjectName: project.Name,
+	}
+	if run != nil {
+		_ = s.logEvent(ctx, run.ID, "mcp.update_task.applied", map[string]any{
+			"task_id":              out.TaskID,
+			"priority":             out.Priority,
+			"insert_after_task_id": strings.TrimSpace(in.InsertAfterTaskID),
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) DeleteTask(ctx context.Context, in DeleteTaskInput) (*DeleteTaskOutput, error) {
+	task, project, run, err := s.resolveTaskWithScope(ctx, in.TaskID, ProjectSelectorInput{
+		ProjectID:   in.ProjectID,
+		ProjectName: in.ProjectName,
+		ProjectPath: in.ProjectPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.taskRepo.DeleteNonRunningTaskWithReorder(ctx, task.ID); err != nil {
+		return nil, err
+	}
+	out := &DeleteTaskOutput{
+		TaskID:      task.ID,
+		ProjectID:   task.ProjectID,
+		ProjectName: project.Name,
+	}
+	if run != nil {
+		_ = s.logEvent(ctx, run.ID, "mcp.delete_task.applied", map[string]any{
+			"task_id": out.TaskID,
 		})
 	}
 	return out, nil
@@ -405,6 +513,53 @@ func (s *Service) resolveProjectWithRunFallback(ctx context.Context, selector Pr
 	return project, nil, nil
 }
 
+func (s *Service) resolveTaskWithScope(ctx context.Context, taskID string, selector ProjectSelectorInput) (*domain.Task, *domain.Project, *domain.Run, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, nil, nil, ErrInvalidInput
+	}
+	task, err := s.taskRepo.GetByID(ctx, taskID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if s.hasRunContext() {
+		sourceTask, run, err := s.sourceTaskInRun(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if task.ProjectID != sourceTask.ProjectID {
+			return nil, nil, nil, ErrInvalidInput
+		}
+		projectName := ""
+		if s.projectRepo != nil {
+			if project, getErr := s.projectRepo.GetByID(ctx, sourceTask.ProjectID); getErr == nil {
+				projectName = strings.TrimSpace(project.Name)
+			}
+		}
+		return task, &domain.Project{ID: sourceTask.ProjectID, Name: projectName}, run, nil
+	}
+
+	if hasProjectSelector(selector) {
+		project, err := s.resolveProjectBySelector(ctx, selector)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if task.ProjectID != project.ID {
+			return nil, nil, nil, ErrInvalidInput
+		}
+		return task, project, nil, nil
+	}
+
+	project := &domain.Project{ID: task.ProjectID}
+	if s.projectRepo != nil && strings.TrimSpace(task.ProjectID) != "" {
+		if item, getErr := s.projectRepo.GetByID(ctx, task.ProjectID); getErr == nil {
+			project = item
+		}
+	}
+	return task, project, nil, nil
+}
+
 func (s *Service) resolveProjectBySelector(ctx context.Context, selector ProjectSelectorInput) (*domain.Project, error) {
 	if s.projectRepo == nil {
 		return nil, fmt.Errorf("%w: project repository not available", ErrInvalidInput)
@@ -437,6 +592,12 @@ func (s *Service) resolveProjectBySelector(ctx context.Context, selector Project
 	}
 
 	return nil, fmt.Errorf("%w: require one of project_id/project_name/project_path when run context is absent", ErrInvalidInput)
+}
+
+func hasProjectSelector(selector ProjectSelectorInput) bool {
+	return strings.TrimSpace(selector.ProjectID) != "" ||
+		strings.TrimSpace(selector.ProjectName) != "" ||
+		strings.TrimSpace(selector.ProjectPath) != ""
 }
 
 func (s *Service) resolveProjectByName(ctx context.Context, name string) (*domain.Project, error) {
@@ -551,23 +712,6 @@ func (s *Service) findNeedsInputReason(ctx context.Context, runID string) string
 		}
 	}
 	return ""
-}
-
-func dedupeStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }
 
 func mapTaskSummaries(tasks []domain.Task) []TaskSummaryItem {

@@ -17,6 +17,12 @@ func TestToolListResult_DoesNotExposeLegacyTodoAliases(t *testing.T) {
 	if strings.Contains(string(raw), "todo.") {
 		t.Fatalf("expected no legacy todo aliases in tool list, got %s", string(raw))
 	}
+	if !strings.Contains(string(raw), "auto-work.update_task") {
+		t.Fatalf("expected update_task exposed in tool list, got %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "auto-work.delete_task") {
+		t.Fatalf("expected delete_task exposed in tool list, got %s", string(raw))
+	}
 }
 
 func TestHandleToolCall_RejectsLegacyTodoAlias(t *testing.T) {

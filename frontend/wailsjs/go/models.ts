@@ -7,6 +7,7 @@ export namespace app {
 	    model: string;
 	    system_prompt: string;
 	    failure_policy: string;
+	    frontend_screenshot_report_enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new CreateProjectRequest(source);
@@ -20,6 +21,7 @@ export namespace app {
 	        this.model = source["model"];
 	        this.system_prompt = source["system_prompt"];
 	        this.failure_policy = source["failure_policy"];
+	        this.frontend_screenshot_report_enabled = source["frontend_screenshot_report_enabled"];
 	    }
 	}
 	export class CreateTaskRequest {
@@ -27,7 +29,6 @@ export namespace app {
 	    title: string;
 	    description: string;
 	    priority: number;
-	    depends_on: string[];
 	    provider: string;
 	
 	    static createFrom(source: any = {}) {
@@ -40,7 +41,6 @@ export namespace app {
 	        this.title = source["title"];
 	        this.description = source["description"];
 	        this.priority = source["priority"];
-	        this.depends_on = source["depends_on"];
 	        this.provider = source["provider"];
 	    }
 	}
@@ -472,6 +472,7 @@ export namespace app {
 	    model: string;
 	    system_prompt: string;
 	    failure_policy: string;
+	    frontend_screenshot_report_enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateProjectRequest(source);
@@ -485,6 +486,7 @@ export namespace app {
 	        this.model = source["model"];
 	        this.system_prompt = source["system_prompt"];
 	        this.failure_policy = source["failure_policy"];
+	        this.frontend_screenshot_report_enabled = source["frontend_screenshot_report_enabled"];
 	    }
 	}
 	export class UpdateTaskRequest {
@@ -492,7 +494,6 @@ export namespace app {
 	    title: string;
 	    description: string;
 	    priority: number;
-	    depends_on: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateTaskRequest(source);
@@ -504,7 +505,6 @@ export namespace app {
 	        this.title = source["title"];
 	        this.description = source["description"];
 	        this.priority = source["priority"];
-	        this.depends_on = source["depends_on"];
 	    }
 	}
 
@@ -568,6 +568,7 @@ export namespace domain {
 	    SystemPrompt: string;
 	    FailurePolicy: string;
 	    AutoDispatchEnabled: boolean;
+	    FrontendScreenshotReportEnabled: boolean;
 	    // Go type: time
 	    CreatedAt: any;
 	    // Go type: time
@@ -587,6 +588,7 @@ export namespace domain {
 	        this.SystemPrompt = source["SystemPrompt"];
 	        this.FailurePolicy = source["FailurePolicy"];
 	        this.AutoDispatchEnabled = source["AutoDispatchEnabled"];
+	        this.FrontendScreenshotReportEnabled = source["FrontendScreenshotReportEnabled"];
 	        this.CreatedAt = this.convertValues(source["CreatedAt"], null);
 	        this.UpdatedAt = this.convertValues(source["UpdatedAt"], null);
 	    }
@@ -620,7 +622,6 @@ export namespace domain {
 	    Description: string;
 	    Priority: number;
 	    Status: string;
-	    DependsOn: string[];
 	    Provider: string;
 	    RetryCount: number;
 	    MaxRetries: number;
@@ -647,7 +648,6 @@ export namespace domain {
 	        this.Description = source["Description"];
 	        this.Priority = source["Priority"];
 	        this.Status = source["Status"];
-	        this.DependsOn = source["DependsOn"];
 	        this.Provider = source["Provider"];
 	        this.RetryCount = source["RetryCount"];
 	        this.MaxRetries = source["MaxRetries"];

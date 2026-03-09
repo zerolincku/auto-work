@@ -39,7 +39,7 @@ export function ListSystemLogs(arg1:string,arg2:number):Promise<Array<app.System
 
 export function ListTasks(arg1:string,arg2:string,arg3:string,arg4:number):Promise<Array<domain.Task>>;
 
-export function MCPStatus():Promise<app.MCPStatusView>;
+export function MCPStatus(arg1:string):Promise<app.MCPStatusView>;
 
 export function RetryTask(arg1:string):Promise<void>;
 

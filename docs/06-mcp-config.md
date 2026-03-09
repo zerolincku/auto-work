@@ -2,12 +2,12 @@
 
 更新时间：2026-03-05
 
-本文档对应当前实现：**MCP Server 与 auto-work 后端同进程启动**，默认使用 HTTP 传输，不再使用 `mcp-stdio`。
+本文档对应当前实现：**MCP Server 与 auto-work 后端同进程启动**，仅使用内置 HTTP 端点。
 
 ## 1. 关键约定
 
 - MCP server 别名固定：`auto-work`
-- 工具名固定：`auto-work.report_result`、`auto-work.create_tasks`、`auto-work.list_pending_tasks`、`auto-work.list_history_tasks`、`auto-work.get_task_detail`
+- 工具名固定：`auto-work.report_result`、`auto-work.create_tasks`、`auto-work.update_task`、`auto-work.delete_task`、`auto-work.list_pending_tasks`、`auto-work.list_history_tasks`、`auto-work.get_task_detail`
 - `auto-work` 同时是 server 别名与工具名前缀
 
 ## 2. 运行原理（现在是怎样工作的）
@@ -20,7 +20,7 @@
 这意味着：
 
 - 不需要单独再启动一个 MCP 进程
-- 自动派发链路不依赖 `mcp-stdio`
+- 自动派发链路直接使用当前 run 注入的 MCP HTTP URL
 
 ## 3. 全局安装 MCP（Claude Code + Codex）
 
@@ -69,13 +69,11 @@ codex mcp list --json
 ```bash
 AUTO_WORK_ENABLE_MCP_CALLBACK=1 \
 AUTO_WORK_REQUIRE_MCP_CALLBACK=1 \
-AUTO_WORK_MCP_TRANSPORT=http \
 wails dev
 ```
 
 说明：
 
-- `AUTO_WORK_MCP_TRANSPORT` 默认为 `http`
 - `AUTO_WORK_MCP_HTTP_URL` 默认为 `http://127.0.0.1:39123/mcp`（固定端口）
 
 ### 4.2 指定固定端口（可选）

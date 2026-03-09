@@ -35,8 +35,8 @@ func TestDispatcher_ClaimNextTaskForAgent(t *testing.T) {
 		t.Fatalf("upsert agent: %v", err)
 	}
 
-	t1 := newTask("task-1", "first", 200, nil)
-	t2 := newTask("task-2", "second", 100, []string{"task-1"})
+	t1 := newTask("task-1", "first", 100)
+	t2 := newTask("task-2", "second", 200)
 	if err := taskRepo.Create(ctx, t1); err != nil {
 		t.Fatalf("create t1: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDispatcher_FailedRunSchedulesRetry_AndNextAttemptIncrements(t *testing.
 		t.Fatalf("upsert agent: %v", err)
 	}
 
-	task := newTask("task-retry", "retry", 100, nil)
+	task := newTask("task-retry", "retry", 100)
 	if err := taskRepo.Create(ctx, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -166,93 +166,6 @@ func TestDispatcher_FailedRunSchedulesRetry_AndNextAttemptIncrements(t *testing.
 	}
 }
 
-func TestDispatcher_ClaimByTitleDependency_BackwardCompatible(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	sqlDB := setupDB(t)
-	taskRepo := repository.NewTaskRepository(sqlDB)
-	projectRepo := repository.NewProjectRepository(sqlDB)
-	agentRepo := repository.NewAgentRepository(sqlDB)
-	dispatcher := scheduler.NewDispatcher(sqlDB)
-
-	project := &domain.Project{
-		ID:        "project-title-dep",
-		Name:      "title-dep",
-		Path:      t.TempDir(),
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	}
-	if err := projectRepo.Create(ctx, project); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	agent := &domain.Agent{
-		ID:          "agent-title-dep",
-		Name:        "title-dep-agent",
-		Provider:    "claude",
-		Enabled:     true,
-		Concurrency: 1,
-	}
-	if err := agentRepo.Upsert(ctx, agent); err != nil {
-		t.Fatalf("upsert agent: %v", err)
-	}
-
-	seed := time.Now().UTC()
-	t1 := &domain.Task{
-		ID:          "task-title-1",
-		ProjectID:   project.ID,
-		Title:       "初始化 Go 项目",
-		Description: "desc",
-		Priority:    200,
-		Status:      domain.TaskPending,
-		DependsOn:   nil,
-		Provider:    "claude",
-		CreatedAt:   seed,
-		UpdatedAt:   seed,
-	}
-	t2 := &domain.Task{
-		ID:          "task-title-2",
-		ProjectID:   project.ID,
-		Title:       "配置 Gin 路由",
-		Description: "desc",
-		Priority:    100,
-		Status:      domain.TaskPending,
-		// Legacy format: dependency uses title, not task ID.
-		DependsOn: []string{"初始化 Go 项目"},
-		Provider:  "claude",
-		CreatedAt: seed.Add(time.Second),
-		UpdatedAt: seed.Add(time.Second),
-	}
-	if err := taskRepo.Create(ctx, t1); err != nil {
-		t.Fatalf("create t1: %v", err)
-	}
-	if err := taskRepo.Create(ctx, t2); err != nil {
-		t.Fatalf("create t2: %v", err)
-	}
-
-	first, firstRun, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-1")
-	if err != nil {
-		t.Fatalf("claim first: %v", err)
-	}
-	if first.ID != t1.ID {
-		t.Fatalf("expected first task %s, got %s", t1.ID, first.ID)
-	}
-
-	exitCode := 0
-	if err := dispatcher.MarkRunFinished(ctx, firstRun.ID, domain.RunDone, domain.TaskDone, "ok", "done", &exitCode); err != nil {
-		t.Fatalf("finish first run: %v", err)
-	}
-
-	second, _, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-2")
-	if err != nil {
-		t.Fatalf("claim second: %v", err)
-	}
-	if second.ID != t2.ID {
-		t.Fatalf("expected second task %s, got %s", t2.ID, second.ID)
-	}
-}
-
 func TestDispatcher_MarkRunFinished_TriggersHook(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -273,7 +186,7 @@ func TestDispatcher_MarkRunFinished_TriggersHook(t *testing.T) {
 		t.Fatalf("upsert agent: %v", err)
 	}
 
-	task := newTask("task-hook", "hook task", 100, nil)
+	task := newTask("task-hook", "hook task", 100)
 	if err := taskRepo.Create(ctx, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -352,7 +265,6 @@ func TestDispatcher_ClaimNextTaskForAgent_UsesProjectDefaultProvider(t *testing.
 		Description: "desc",
 		Priority:    100,
 		Status:      domain.TaskPending,
-		DependsOn:   nil,
 		Provider:    "claude",
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
@@ -398,8 +310,8 @@ func TestDispatcher_ClaimTaskForAgent_ClaimsSpecifiedPendingTask(t *testing.T) {
 		t.Fatalf("upsert agent: %v", err)
 	}
 
-	first := newTask("task-specific-1", "first", 100, nil)
-	second := newTask("task-specific-2", "second", 200, nil)
+	first := newTask("task-specific-1", "first", 100)
+	second := newTask("task-specific-2", "second", 200)
 	if err := taskRepo.Create(ctx, first); err != nil {
 		t.Fatalf("create first: %v", err)
 	}
@@ -424,36 +336,6 @@ func TestDispatcher_ClaimTaskForAgent_ClaimsSpecifiedPendingTask(t *testing.T) {
 	}
 	if persisted.Status != domain.TaskRunning {
 		t.Fatalf("expected claimed task running, got %s", persisted.Status)
-	}
-}
-
-func TestDispatcher_ClaimTaskForAgent_BlockedDependencyReturnsNoRunnable(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	sqlDB := setupDB(t)
-	taskRepo := repository.NewTaskRepository(sqlDB)
-	agentRepo := repository.NewAgentRepository(sqlDB)
-	dispatcher := scheduler.NewDispatcher(sqlDB)
-
-	agent := &domain.Agent{
-		ID:          "agent-specific-dep",
-		Name:        "specific-dep-agent",
-		Provider:    "claude",
-		Enabled:     true,
-		Concurrency: 1,
-	}
-	if err := agentRepo.Upsert(ctx, agent); err != nil {
-		t.Fatalf("upsert agent: %v", err)
-	}
-
-	blocked := newTask("task-specific-blocked", "blocked", 100, []string{"dep-not-done"})
-	if err := taskRepo.Create(ctx, blocked); err != nil {
-		t.Fatalf("create blocked task: %v", err)
-	}
-
-	if _, _, err := dispatcher.ClaimTaskForAgent(ctx, agent.ID, "claude", blocked.ID, "prompt-specific"); !errors.Is(err, scheduler.ErrNoRunnableTask) {
-		t.Fatalf("expected ErrNoRunnableTask, got %v", err)
 	}
 }
 
@@ -641,7 +523,7 @@ func setupDB(t *testing.T) *sql.DB {
 	return sqlDB
 }
 
-func newTask(id, title string, priority int, deps []string) *domain.Task {
+func newTask(id, title string, priority int) *domain.Task {
 	now := time.Now().UTC()
 	return &domain.Task{
 		ID:          id,
@@ -649,7 +531,6 @@ func newTask(id, title string, priority int, deps []string) *domain.Task {
 		Description: title + "-desc",
 		Priority:    priority,
 		Status:      domain.TaskPending,
-		DependsOn:   deps,
 		Provider:    "claude",
 		CreatedAt:   now,
 		UpdatedAt:   now,

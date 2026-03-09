@@ -166,6 +166,21 @@ func (a *App) lookupProjectPath(ctx context.Context, projectID string) string {
 	return strings.TrimSpace(project.Path)
 }
 
+func (a *App) projectFrontendScreenshotReportEnabled(ctx context.Context, projectID string) bool {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	project, err := a.projectRepo.GetByID(ctx, projectID)
+	if err != nil {
+		return false
+	}
+	return project.FrontendScreenshotReportEnabled
+}
+
 func listGitChangedFiles(ctx context.Context, projectPath string) (map[string]struct{}, error) {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
@@ -279,17 +294,6 @@ func isFrontendRelatedPath(path string) bool {
 		}
 	}
 	return false
-}
-
-func telegramFrontendScreenshotEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv("AUTO_WORK_TELEGRAM_FRONTEND_SCREENSHOT_ENABLED"))
-	if raw == "" {
-		return true
-	}
-	if raw == "0" || strings.EqualFold(raw, "false") {
-		return false
-	}
-	return true
 }
 
 type screenshotRefs struct {

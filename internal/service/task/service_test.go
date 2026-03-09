@@ -40,7 +40,6 @@ func TestService_CreateAndList(t *testing.T) {
 		Title:       "Task A",
 		Description: "Desc A",
 		Priority:    200,
-		DependsOn:   []string{"dep-1", "dep-1", " "},
 		Provider:    "claude",
 	})
 	if err != nil {
@@ -48,9 +47,6 @@ func TestService_CreateAndList(t *testing.T) {
 	}
 	if created.ID == "" {
 		t.Fatalf("expected ID")
-	}
-	if len(created.DependsOn) != 1 {
-		t.Fatalf("expected deduped deps, got %d", len(created.DependsOn))
 	}
 
 	items, err := svc.List(ctx, "pending", "", projectID, 10)
@@ -164,7 +160,6 @@ func TestService_Update_PendingTask(t *testing.T) {
 		Title:       "Task Pending",
 		Description: "Desc Pending",
 		Priority:    100,
-		DependsOn:   []string{"dep-1"},
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -175,7 +170,6 @@ func TestService_Update_PendingTask(t *testing.T) {
 		Title:       "Task Pending Updated",
 		Description: "Desc Pending Updated",
 		Priority:    80,
-		DependsOn:   []string{"dep-2", "dep-2", " "},
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -188,9 +182,6 @@ func TestService_Update_PendingTask(t *testing.T) {
 	}
 	if updated.Priority != 80 {
 		t.Fatalf("unexpected priority: %d", updated.Priority)
-	}
-	if len(updated.DependsOn) != 1 || updated.DependsOn[0] != "dep-2" {
-		t.Fatalf("unexpected depends_on: %#v", updated.DependsOn)
 	}
 }
 
@@ -273,7 +264,6 @@ func TestService_Update_DoneTaskAllowed(t *testing.T) {
 		Title:       "Task Done Updated",
 		Description: "Desc Done Updated",
 		Priority:    80,
-		DependsOn:   []string{"dep-done"},
 	})
 	if err != nil {
 		t.Fatalf("update done task: %v", err)
@@ -286,9 +276,6 @@ func TestService_Update_DoneTaskAllowed(t *testing.T) {
 	}
 	if updated.Priority != 80 {
 		t.Fatalf("unexpected priority: %d", updated.Priority)
-	}
-	if len(updated.DependsOn) != 1 || updated.DependsOn[0] != "dep-done" {
-		t.Fatalf("unexpected depends_on: %#v", updated.DependsOn)
 	}
 }
 

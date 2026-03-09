@@ -77,9 +77,31 @@ WHERE name = 'failure_policy'`).Scan(&projectFailurePolicyColumnCount); err != n
 	if projectFailurePolicyColumnCount != 1 {
 		t.Fatalf("projects.failure_policy column not found")
 	}
+
+	var projectFrontendScreenshotColumnCount int
+	if err := sqlDB.QueryRow(`
+SELECT COUNT(1)
+FROM pragma_table_info('projects')
+WHERE name = 'frontend_screenshot_report_enabled'`).Scan(&projectFrontendScreenshotColumnCount); err != nil {
+		t.Fatalf("query projects frontend_screenshot_report_enabled column: %v", err)
+	}
+	if projectFrontendScreenshotColumnCount != 1 {
+		t.Fatalf("projects.frontend_screenshot_report_enabled column not found")
+	}
+
+	var taskDependsOnColumnCount int
+	if err := sqlDB.QueryRow(`
+SELECT COUNT(1)
+FROM pragma_table_info('tasks')
+WHERE name = 'depends_on'`).Scan(&taskDependsOnColumnCount); err != nil {
+		t.Fatalf("query tasks depends_on column: %v", err)
+	}
+	if taskDependsOnColumnCount != 0 {
+		t.Fatalf("tasks.depends_on column should be removed")
+	}
 }
 
-func TestUp_ReplacesLegacyGlobalSystemPromptAtVersion17(t *testing.T) {
+func TestUp_ReplacesLegacyGlobalSystemPromptAtVersion19(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -119,8 +141,8 @@ ON CONFLICT(id) DO UPDATE SET system_prompt = excluded.system_prompt, updated_at
 `, legacyPrompt); err != nil {
 		t.Fatalf("seed legacy global_settings row: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 17`); err != nil {
-		t.Fatalf("delete version 17 migration record: %v", err)
+	if _, err := sqlDB.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 19`); err != nil {
+		t.Fatalf("delete version 19 migration record: %v", err)
 	}
 
 	if err := migrate.Up(ctx, sqlDB); err != nil {
@@ -132,6 +154,6 @@ ON CONFLICT(id) DO UPDATE SET system_prompt = excluded.system_prompt, updated_at
 		t.Fatalf("query system_prompt: %v", err)
 	}
 	if got != systemprompt.DefaultGlobalSystemPromptTemplate {
-		t.Fatalf("unexpected system prompt after version 17 migration: %q", got)
+		t.Fatalf("unexpected system prompt after version 19 migration: %q", got)
 	}
 }

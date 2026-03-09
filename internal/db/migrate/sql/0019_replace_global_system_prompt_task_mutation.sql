@@ -1,13 +1,5 @@
-package systemprompt
-
-import (
-	"fmt"
-	"strings"
-
-	"auto-work/internal/domain"
-)
-
-const DefaultGlobalSystemPromptTemplate = `Mandatory Workflow:
+UPDATE global_settings
+SET system_prompt = 'Mandatory Workflow:
 1) First, create or update project-root file auto_work_current_task.md with current task info: task_id, run_id, title, description, start_time, and status=running.
 2) Inspect actual repository files/code/tests related to this task (not task status metadata) to decide whether task outcome is already present.
 3) If the task is already satisfied in code/files, do not repeat changes; update auto_work_current_task.md status=success with reason=already_done.
@@ -23,41 +15,5 @@ const DefaultGlobalSystemPromptTemplate = `Mandatory Workflow:
 13) Before exit, call MCP tool auto-work.report_result exactly once on server auto-work.
 14) auto-work.report_result fields: status(success|failed), summary, details.
 15) If failed, explain reason in details and update auto_work_current_task.md status=failed.
-16) If tool call failed, stop and explain what failed.`
-
-func Compose(globalPrompt, projectPrompt string) string {
-	globalPrompt = strings.TrimSpace(globalPrompt)
-	projectPrompt = strings.TrimSpace(projectPrompt)
-
-	switch {
-	case globalPrompt == "" && projectPrompt == "":
-		return ""
-	case globalPrompt == "":
-		return projectPrompt
-	case projectPrompt == "":
-		return globalPrompt
-	default:
-		return fmt.Sprintf("Global System Prompt:\n%s\n\nProject System Prompt:\n%s", globalPrompt, projectPrompt)
-	}
-}
-
-func Render(template string, task domain.Task, run domain.Run) string {
-	template = strings.TrimSpace(template)
-	if template == "" {
-		return ""
-	}
-
-	projectPath := strings.TrimSpace(task.ProjectPath)
-	if projectPath == "" {
-		projectPath = "(not set)"
-	}
-
-	replacer := strings.NewReplacer(
-		"{{task_id}}", strings.TrimSpace(task.ID),
-		"{{run_id}}", strings.TrimSpace(run.ID),
-		"{{task_title}}", strings.TrimSpace(task.Title),
-		"{{task_description}}", strings.TrimSpace(task.Description),
-		"{{project_path}}", projectPath,
-	)
-	return strings.TrimSpace(replacer.Replace(template))
-}
+16) If tool call failed, stop and explain what failed.'
+WHERE id = 1;

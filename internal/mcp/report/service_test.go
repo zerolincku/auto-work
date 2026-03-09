@@ -2,6 +2,7 @@ package report_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,7 +63,6 @@ func TestCreateTasks_Batch(t *testing.T) {
 			{
 				Title:       "后续任务B",
 				Description: "更新文档",
-				DependsOn:   []string{"x", "x"},
 			},
 		},
 	})
@@ -92,6 +92,208 @@ func TestCreateTasks_Batch(t *testing.T) {
 	}
 	if secondTask.Priority != 102 {
 		t.Fatalf("expected second auto-appended priority=102, got %d", secondTask.Priority)
+	}
+}
+
+func TestCreateTasks_InsertAfterTaskReordersFollowingTasks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	_, taskRepo, _, _, svc, _, sourceTask := setupFixture(t, ctx)
+	now := time.Now().UTC()
+	pendingA := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "A",
+		Description: "pending A",
+		Priority:    101,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	pendingB := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "B",
+		Description: "pending B",
+		Priority:    102,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := taskRepo.Create(ctx, pendingA); err != nil {
+		t.Fatalf("create pending task A: %v", err)
+	}
+	if err := taskRepo.Create(ctx, pendingB); err != nil {
+		t.Fatalf("create pending task B: %v", err)
+	}
+
+	created, err := svc.CreateTasks(ctx, mcpreport.CreateTasksInput{
+		InsertAfterTaskID: sourceTask.ID,
+		Items: []mcpreport.CreateTaskItem{
+			{Title: "插入任务1", Description: "after source"},
+			{Title: "插入任务2", Description: "after source too"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create tasks with insert_after_task_id: %v", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("expected 2 created tasks, got %d", len(created))
+	}
+	if created[0].Priority != 101 || created[1].Priority != 102 {
+		t.Fatalf("unexpected created priorities: %#v", created)
+	}
+
+	gotPendingA, err := taskRepo.GetByID(ctx, pendingA.ID)
+	if err != nil {
+		t.Fatalf("get pending A: %v", err)
+	}
+	gotPendingB, err := taskRepo.GetByID(ctx, pendingB.ID)
+	if err != nil {
+		t.Fatalf("get pending B: %v", err)
+	}
+	if gotPendingA.Priority != 103 {
+		t.Fatalf("expected pending A priority=103, got %d", gotPendingA.Priority)
+	}
+	if gotPendingB.Priority != 104 {
+		t.Fatalf("expected pending B priority=104, got %d", gotPendingB.Priority)
+	}
+}
+
+func TestUpdateTask_ReordersAndUpdatesFields(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	_, taskRepo, _, _, svc, _, sourceTask := setupFixture(t, ctx)
+	now := time.Now().UTC()
+	taskA := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "A",
+		Description: "pending A",
+		Priority:    101,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	taskB := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "B",
+		Description: "pending B",
+		Priority:    102,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	taskC := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "C",
+		Description: "pending C",
+		Priority:    103,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	for _, task := range []*domain.Task{taskA, taskB, taskC} {
+		if err := taskRepo.Create(ctx, task); err != nil {
+			t.Fatalf("create fixture task %s: %v", task.Title, err)
+		}
+	}
+
+	newTitle := "A updated"
+	newDescription := "pending A updated"
+	updated, err := svc.UpdateTask(ctx, mcpreport.UpdateTaskInput{
+		TaskID:            taskA.ID,
+		Title:             &newTitle,
+		Description:       &newDescription,
+		InsertAfterTaskID: taskC.ID,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if updated.Title != newTitle || updated.Description != newDescription {
+		t.Fatalf("unexpected updated content: %#v", updated)
+	}
+	if updated.Priority != 103 {
+		t.Fatalf("expected moved task priority=103, got %d", updated.Priority)
+	}
+
+	gotTaskB, err := taskRepo.GetByID(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("get task B: %v", err)
+	}
+	gotTaskC, err := taskRepo.GetByID(ctx, taskC.ID)
+	if err != nil {
+		t.Fatalf("get task C: %v", err)
+	}
+	if gotTaskB.Priority != 101 {
+		t.Fatalf("expected task B priority=101, got %d", gotTaskB.Priority)
+	}
+	if gotTaskC.Priority != 102 {
+		t.Fatalf("expected task C priority=102, got %d", gotTaskC.Priority)
+	}
+}
+
+func TestDeleteTask_ReordersRemainingTasks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	_, taskRepo, _, _, svc, _, sourceTask := setupFixture(t, ctx)
+	now := time.Now().UTC()
+	taskA := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "A",
+		Description: "pending A",
+		Priority:    101,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	taskB := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "B",
+		Description: "pending B",
+		Priority:    102,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	taskC := &domain.Task{
+		ID:          uuid.NewString(),
+		ProjectID:   sourceTask.ProjectID,
+		Title:       "C",
+		Description: "pending C",
+		Priority:    103,
+		Status:      domain.TaskPending,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	for _, task := range []*domain.Task{taskA, taskB, taskC} {
+		if err := taskRepo.Create(ctx, task); err != nil {
+			t.Fatalf("create fixture task %s: %v", task.Title, err)
+		}
+	}
+
+	_, err := svc.DeleteTask(ctx, mcpreport.DeleteTaskInput{TaskID: taskB.ID})
+	if err != nil {
+		t.Fatalf("delete task: %v", err)
+	}
+
+	_, err = taskRepo.GetByID(ctx, taskB.ID)
+	if !errors.Is(err, repository.ErrTaskNotFound) {
+		t.Fatalf("expected deleted task not found, got %v", err)
+	}
+	gotTaskC, err := taskRepo.GetByID(ctx, taskC.ID)
+	if err != nil {
+		t.Fatalf("get task C: %v", err)
+	}
+	if gotTaskC.Priority != 102 {
+		t.Fatalf("expected task C priority=102, got %d", gotTaskC.Priority)
 	}
 }
 

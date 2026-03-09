@@ -38,6 +38,8 @@ func TestBuildPrompt_ContainsCodeBasedDoneShortCircuit(t *testing.T) {
 	assertContains(t, prompt, "If the task is already satisfied in code/files, do not repeat changes; update auto_work_current_task.md status=success")
 	assertContains(t, prompt, "Do not ask user questions. Do not wait for user confirmation.")
 	assertContains(t, prompt, "If required information is truly missing and task cannot be completed reliably, call auto-work.report_result with status=failed")
+	assertContains(t, prompt, "auto-work.update_task")
+	assertContains(t, prompt, "auto-work.delete_task")
 	assertContains(t, prompt, "Never stage or commit local task/context artifacts or browser automation outputs")
 	assertContains(t, prompt, "exclude auto_work_current_task.md, current_task.md, curret_task.md, .playwright-cli/, output/playwright/, playwright-report/, test-results/")
 	assertContains(t, prompt, "Before calling auto-work.report_result, you must run git commit for this task")
@@ -71,12 +73,11 @@ func TestBuildPrompt_IncludesProjectSystemPrompt(t *testing.T) {
 	assertContains(t, prompt, "你是项目级助手，先阅读代码再修改。")
 }
 
-func TestBuildMCPConfig_HTTPTransport(t *testing.T) {
+func TestBuildMCPConfig(t *testing.T) {
 	t.Parallel()
 
 	r := New(Options{
-		MCPTransport: "http",
-		MCPHTTPURL:   "http://127.0.0.1:38080/mcp",
+		MCPHTTPURL: "http://127.0.0.1:38080/mcp",
 	})
 	cfgJSON, err := r.buildMCPConfig(domain.Run{ID: "run-1"}, domain.Task{ID: "task-1"})
 	if err != nil {

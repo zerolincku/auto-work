@@ -31,7 +31,6 @@ type Options struct {
 	PermissionMode    string
 	ExtraArgs         []string
 	EnableMCPCallback bool
-	MCPTransport      string
 	MCPHTTPURL        string
 	OnLine            func(runID, stream, line string)
 	OnExit            func(runID string, exitCode int, runErr error)
@@ -271,30 +270,18 @@ func buildPrompt(task domain.Task, run domain.Run) string {
 }
 
 func (r *Runner) buildMCPConfig(run domain.Run, task domain.Task) (string, error) {
-	transport := strings.ToLower(strings.TrimSpace(r.opts.MCPTransport))
-	if transport == "" || transport != "http" {
-		transport = "http"
+	url, err := mcpcallback.BuildRunScopedURL(r.opts.MCPHTTPURL, run.ID, task.ID)
+	if err != nil {
+		return "", fmt.Errorf("mcp http config invalid: %w", err)
 	}
-
 	cfg := map[string]any{
-		"mcpServers": map[string]any{},
+		"mcpServers": map[string]any{
+			"auto-work": map[string]any{
+				"type": "http",
+				"url":  url,
+			},
+		},
 	}
-	servers := cfg["mcpServers"].(map[string]any)
-
-	switch transport {
-	case "http":
-		url, err := mcpcallback.BuildRunScopedURL(r.opts.MCPHTTPURL, run.ID, task.ID)
-		if err != nil {
-			return "", fmt.Errorf("mcp http transport config invalid: %w", err)
-		}
-		servers["auto-work"] = map[string]any{
-			"type": "http",
-			"url":  url,
-		}
-	default:
-		return "", fmt.Errorf("unsupported mcp transport: %s", transport)
-	}
-
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return "", err

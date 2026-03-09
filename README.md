@@ -6,7 +6,7 @@ V1 目标：
 - 任务管理（创建、查看、状态更新）
 - 调度派发（空闲 agent 领取下一个任务）
 - provider：`Claude` / `Codex`
-- 任务完成通过 MCP 回调 `auto-work.report_result` 回写状态
+- 任务完成通过 MCP 回调 `auto-work.report_result` 回写状态，且支持通过 MCP 创建、修改、删除任务
 
 ## 当前已实现
 
@@ -18,8 +18,8 @@ V1 目标：
 - 后端服务层
   - Project Service：项目创建与查询（项目名 + 项目路径）
   - Task Service：创建、列表、状态更新（按项目隔离）
-  - Dispatcher：原子领取任务、依赖检查、运行完成回写
-  - MCP 服务（同进程 HTTP）：`auto-work.report_result`、`auto-work.create_tasks`（支持批量）、`auto-work.list_pending_tasks`、`auto-work.list_history_tasks`、`auto-work.get_task_detail`
+  - Dispatcher：原子领取任务、运行完成回写
+  - MCP 服务（同进程 HTTP）：`auto-work.report_result`、`auto-work.create_tasks`（支持批量与按任务后插入）、`auto-work.update_task`、`auto-work.delete_task`、`auto-work.list_pending_tasks`、`auto-work.list_history_tasks`、`auto-work.get_task_detail`
   - App Facade：供 Wails 直接绑定的方法
   - Claude Runner：在任务所属项目路径中执行
   - 运行态查询：`ListRunningRuns`、`ListRunLogs`（实时日志轮询）
@@ -95,14 +95,13 @@ AUTO_WORK_RUN_CLAUDE_ON_DISPATCH=1 \
 wails dev
 ```
 
-MCP Transport（默认 `http`）：
+MCP HTTP 地址：
 ```bash
-AUTO_WORK_MCP_TRANSPORT=http
 AUTO_WORK_MCP_HTTP_URL=http://127.0.0.1:39123/mcp
 ```
 
 说明：
-- MCP HTTP Server 由后端同进程自动启动，无需单独执行 `mcp-http` 命令。
+- MCP HTTP Server 由后端同进程自动启动。
 - Runner 会按每次 run 自动注入 `run_id/task_id` 到 URL query。
 - 默认固定端口为 `39123`；如需改端口，可设定：`AUTO_WORK_MCP_HTTP_URL=http://127.0.0.1:47081/mcp`。
 - 如需把 MCP 全局安装到 `Claude Code / Codex`，见 [`docs/06-mcp-config.md`](docs/06-mcp-config.md) 第 3 节。

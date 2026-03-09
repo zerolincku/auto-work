@@ -26,25 +26,25 @@ func TestParseAddTaskArgs(t *testing.T) {
 		wantProjectSel string
 		wantTitle      string
 		wantDesc       string
-		wantProvider   string
-		wantSpecified  bool
 		wantErr        bool
 	}{
 		{
-			name:         "single project default provider",
-			in:           "修复登录超时 | 排查并补测试",
-			wantTitle:    "修复登录超时",
-			wantDesc:     "排查并补测试",
-			wantProvider: "",
+			name:      "single project default provider",
+			in:        "修复登录超时 | 排查并补测试",
+			wantTitle: "修复登录超时",
+			wantDesc:  "排查并补测试",
 		},
 		{
-			name:           "with explicit project and provider",
-			in:             "p:proj-1 | 增加健康检查 | 补 /healthz | codex",
+			name:           "with explicit project",
+			in:             "proj-1 | 增加健康检查 | 补 /healthz",
 			wantProjectSel: "proj-1",
 			wantTitle:      "增加健康检查",
 			wantDesc:       "补 /healthz",
-			wantProvider:   "codex",
-			wantSpecified:  true,
+		},
+		{
+			name:    "provider no longer accepted",
+			in:      "proj-1 | 增加健康检查 | 补 /healthz | codex",
+			wantErr: true,
 		},
 		{
 			name:    "invalid format",
@@ -57,7 +57,7 @@ func TestParseAddTaskArgs(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotProjectSel, gotTitle, gotDesc, gotProvider, gotSpecified, err := parseAddTaskArgs(tc.in)
+			gotProjectSel, gotTitle, gotDesc, err := parseAddTaskArgs(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error")
@@ -75,12 +75,6 @@ func TestParseAddTaskArgs(t *testing.T) {
 			}
 			if gotDesc != tc.wantDesc {
 				t.Fatalf("desc mismatch: got=%q want=%q", gotDesc, tc.wantDesc)
-			}
-			if gotProvider != tc.wantProvider {
-				t.Fatalf("provider mismatch: got=%q want=%q", gotProvider, tc.wantProvider)
-			}
-			if gotSpecified != tc.wantSpecified {
-				t.Fatalf("provider specified mismatch: got=%v want=%v", gotSpecified, tc.wantSpecified)
 			}
 		})
 	}
@@ -134,7 +128,7 @@ func TestHandleCreateTask_ExplicitProjectAppendPriority(t *testing.T) {
 		t.Fatalf("seed task: %v", err)
 	}
 
-	msg := svc.handleCreateTask(ctx, "p:"+projectID+" | 新任务 | 通过 tg 添加 | codex")
+	msg := svc.handleCreateTask(ctx, projectID+" | 新任务 | 通过 tg 添加")
 	if !strings.Contains(msg, "已创建任务") {
 		t.Fatalf("unexpected response: %s", msg)
 	}
@@ -165,6 +159,9 @@ func TestHandleCreateTask_MultiProjectRequiresSelector(t *testing.T) {
 	msg := svc.handleCreateTask(ctx, "未指定项目任务 | 测试描述")
 	if !strings.Contains(msg, "存在多个项目，请在命令里指定项目") {
 		t.Fatalf("unexpected response: %s", msg)
+	}
+	if !strings.Contains(msg, "项目1(proj-1)") {
+		t.Fatalf("expected project choices in response: %s", msg)
 	}
 }
 

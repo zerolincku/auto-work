@@ -23,7 +23,6 @@ type Task struct {
 	Description  string
 	Priority     int
 	Status       TaskStatus
-	DependsOn    []string
 	Provider     string
 	RetryCount   int
 	MaxRetries   int

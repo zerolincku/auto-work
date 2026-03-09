@@ -74,8 +74,8 @@ export function ListTasks(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ListTasks'](arg1, arg2, arg3, arg4);
 }
 
-export function MCPStatus() {
-  return window['go']['main']['App']['MCPStatus']();
+export function MCPStatus(arg1) {
+  return window['go']['main']['App']['MCPStatus'](arg1);
 }
 
 export function RetryTask(arg1) {

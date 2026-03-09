@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,7 +192,6 @@ func TestApp_UpdateTask_NonRunningEditable(t *testing.T) {
 		Title:       "Task Updated",
 		Description: "Desc Updated",
 		Priority:    90,
-		DependsOn:   []string{"dep-1", "dep-1"},
 	})
 	if err != nil {
 		t.Fatalf("update pending task: %v", err)
@@ -204,9 +204,6 @@ func TestApp_UpdateTask_NonRunningEditable(t *testing.T) {
 	}
 	if updated.Priority != 90 {
 		t.Fatalf("unexpected priority: %d", updated.Priority)
-	}
-	if len(updated.DependsOn) != 1 || updated.DependsOn[0] != "dep-1" {
-		t.Fatalf("unexpected depends_on: %#v", updated.DependsOn)
 	}
 
 	if err := application.UpdateTaskStatus(ctx, created.ID, "done"); err != nil {
@@ -384,12 +381,13 @@ func TestApp_ProjectAIConfigCRUD_WithSystemPrompt(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	project, err := application.CreateProject(ctx, app.CreateProjectRequest{
-		Name:            "项目C",
-		Path:            filepath.Join(t.TempDir(), "project-c"),
-		DefaultProvider: "codex",
-		Model:           "gpt-5.3-codex",
-		SystemPrompt:    "  你是项目专属助手，请先阅读 README。  ",
-		FailurePolicy:   "continue",
+		Name:                            "项目C",
+		Path:                            filepath.Join(t.TempDir(), "project-c"),
+		DefaultProvider:                 "codex",
+		Model:                           "gpt-5.3-codex",
+		SystemPrompt:                    "  你是项目专属助手，请先阅读 README。  ",
+		FailurePolicy:                   "continue",
+		FrontendScreenshotReportEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -399,6 +397,9 @@ func TestApp_ProjectAIConfigCRUD_WithSystemPrompt(t *testing.T) {
 	}
 	if project.FailurePolicy != "continue" {
 		t.Fatalf("unexpected create failure policy: %q", project.FailurePolicy)
+	}
+	if !project.FrontendScreenshotReportEnabled {
+		t.Fatalf("expected create frontend screenshot report enabled")
 	}
 
 	updated, err := application.UpdateProjectAIConfig(ctx, app.UpdateProjectAIConfigRequest{
@@ -423,6 +424,9 @@ func TestApp_ProjectAIConfigCRUD_WithSystemPrompt(t *testing.T) {
 	if updated.FailurePolicy != "block" {
 		t.Fatalf("unexpected updated failure policy: %q", updated.FailurePolicy)
 	}
+	if !updated.FrontendScreenshotReportEnabled {
+		t.Fatalf("expected frontend screenshot report setting unchanged after AI config update")
+	}
 
 	projects, err := application.ListProjects(ctx, 20)
 	if err != nil {
@@ -439,6 +443,9 @@ func TestApp_ProjectAIConfigCRUD_WithSystemPrompt(t *testing.T) {
 		}
 		if item.FailurePolicy != "block" {
 			t.Fatalf("unexpected persisted failure policy: %q", item.FailurePolicy)
+		}
+		if !item.FrontendScreenshotReportEnabled {
+			t.Fatalf("unexpected persisted frontend screenshot report setting: %v", item.FrontendScreenshotReportEnabled)
 		}
 	}
 	if !found {
@@ -503,12 +510,13 @@ VALUES(?,?,?,?,?)`,
 	}
 
 	updated, err := application.UpdateProject(ctx, app.UpdateProjectRequest{
-		ProjectID:       project.ID,
-		Name:            "项目删除测试-更新",
-		DefaultProvider: "codex",
-		Model:           "gpt-5.3-codex",
-		SystemPrompt:    "  更新后的项目级提示词  ",
-		FailurePolicy:   "continue",
+		ProjectID:                       project.ID,
+		Name:                            "项目删除测试-更新",
+		DefaultProvider:                 "codex",
+		Model:                           "gpt-5.3-codex",
+		SystemPrompt:                    "  更新后的项目级提示词  ",
+		FailurePolicy:                   "continue",
+		FrontendScreenshotReportEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("update project: %v", err)
@@ -527,6 +535,9 @@ VALUES(?,?,?,?,?)`,
 	}
 	if updated.FailurePolicy != "continue" {
 		t.Fatalf("unexpected failure policy: %s", updated.FailurePolicy)
+	}
+	if !updated.FrontendScreenshotReportEnabled {
+		t.Fatalf("unexpected frontend screenshot report setting: %v", updated.FrontendScreenshotReportEnabled)
 	}
 
 	if err := application.DeleteProject(ctx, project.ID); err != nil {
@@ -597,8 +608,8 @@ VALUES('a1','A1','claude',1,1,?,?)`, time.Now().UTC(), time.Now().UTC()); err !=
 		t.Fatalf("insert agent: %v", err)
 	}
 	if _, err := sqlDB.ExecContext(ctx, `
-INSERT INTO tasks(id,project_id,title,description,priority,status,depends_on,provider,created_at,updated_at)
-VALUES('t1','p1','T1','D1',100,'running','[]','claude',?,?)`, time.Now().UTC(), time.Now().UTC()); err != nil {
+INSERT INTO tasks(id,project_id,title,description,priority,status,provider,created_at,updated_at)
+VALUES('t1','p1','T1','D1',100,'running','claude',?,?)`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("insert task: %v", err)
 	}
 	if _, err := sqlDB.ExecContext(ctx, `
@@ -1099,16 +1110,22 @@ func TestApp_DispatchTask_ClaimsSpecifiedTask(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	projectPath := t.TempDir()
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "test.db")
 
 	application, err := app.New(ctx, config.Config{
-		DatabasePath:        filepath.Join(t.TempDir(), "test.db"),
+		DatabasePath:        dbPath,
 		ClaudeBinary:        filepath.Join(projectPath, "missing-claude"),
 		RunClaudeOnDispatch: true,
 	})
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
-	t.Cleanup(func() { _ = application.Close() })
+	t.Cleanup(func() {
+		_ = application.Close()
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
 
 	project, err := application.CreateProject(ctx, app.CreateProjectRequest{
 		Name: "项目F",

@@ -10,6 +10,8 @@ import (
 const (
 	toolReportResult  = "auto-work.report_result"
 	toolCreateTasks   = "auto-work.create_tasks"
+	toolUpdateTask    = "auto-work.update_task"
+	toolDeleteTask    = "auto-work.delete_task"
 	toolListPending   = "auto-work.list_pending_tasks"
 	toolListHistory   = "auto-work.list_history_tasks"
 	toolGetTaskDetail = "auto-work.get_task_detail"
@@ -50,7 +52,7 @@ func ToolListResult() map[string]any {
 			},
 			{
 				"name":        toolCreateTasks,
-				"description": "批量创建后续任务（归属当前项目，优先级自动追加到队尾）",
+				"description": "批量创建后续任务；可追加到队尾，或插入到指定任务之后并自动重排后续优先级",
 				"inputSchema": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -65,10 +67,6 @@ func ToolListResult() map[string]any {
 									"description": map[string]any{
 										"type": "string",
 									},
-									"depends_on": map[string]any{
-										"type":  "array",
-										"items": map[string]any{"type": "string"},
-									},
 									"provider": map[string]any{
 										"type": "string",
 									},
@@ -77,6 +75,10 @@ func ToolListResult() map[string]any {
 							},
 							"minItems": 1,
 							"maxItems": 50,
+						},
+						"insert_after_task_id": map[string]any{
+							"type":        "string",
+							"description": "可选：把整批新任务插入到指定任务之后，并自动重排后续任务优先级",
 						},
 						"project_id": map[string]any{
 							"type":        "string",
@@ -92,6 +94,70 @@ func ToolListResult() map[string]any {
 						},
 					},
 					"required": []string{"items"},
+				},
+			},
+			{
+				"name":        toolUpdateTask,
+				"description": "修改任务内容；可选地把任务移动到指定任务之后，并自动重排优先级",
+				"inputSchema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task_id": map[string]any{
+							"type":        "string",
+							"description": "任务ID",
+						},
+						"title": map[string]any{
+							"type":        "string",
+							"description": "可选：新标题；不传则保持不变",
+						},
+						"description": map[string]any{
+							"type":        "string",
+							"description": "可选：新描述；不传则保持不变",
+						},
+						"insert_after_task_id": map[string]any{
+							"type":        "string",
+							"description": "可选：把当前任务移动到指定任务之后，并自动重排后续任务优先级",
+						},
+						"project_id": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失时，优先按项目ID匹配",
+						},
+						"project_name": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失且未提供 project_id 时，按项目名称匹配",
+						},
+						"project_path": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失且未提供 project_id/project_name 时，按项目绝对路径匹配",
+						},
+					},
+					"required": []string{"task_id"},
+				},
+			},
+			{
+				"name":        toolDeleteTask,
+				"description": "删除指定任务；删除后自动重排后续任务优先级",
+				"inputSchema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task_id": map[string]any{
+							"type":        "string",
+							"description": "任务ID",
+						},
+						"project_id": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失时，优先按项目ID匹配",
+						},
+						"project_name": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失且未提供 project_id 时，按项目名称匹配",
+						},
+						"project_path": map[string]any{
+							"type":        "string",
+							"description": "可选：当 run/task 上下文缺失且未提供 project_id/project_name 时，按项目绝对路径匹配",
+						},
+					},
+					"required": []string{"task_id"},
 				},
 			},
 			{
@@ -199,6 +265,44 @@ func HandleToolCall(ctx context.Context, reporter *Service, raw json.RawMessage)
 				"items":         items,
 			}
 			res, err := json.Marshal(out)
+			if err != nil {
+				return "", err
+			}
+			return string(res), nil
+		}
+		if name == toolUpdateTask {
+			var in UpdateTaskInput
+			b, err := json.Marshal(call.Arguments)
+			if err != nil {
+				return "", err
+			}
+			if err := json.Unmarshal(b, &in); err != nil {
+				return "", err
+			}
+			item, err := reporter.UpdateTask(ctx, in)
+			if err != nil {
+				return "", err
+			}
+			res, err := json.Marshal(item)
+			if err != nil {
+				return "", err
+			}
+			return string(res), nil
+		}
+		if name == toolDeleteTask {
+			var in DeleteTaskInput
+			b, err := json.Marshal(call.Arguments)
+			if err != nil {
+				return "", err
+			}
+			if err := json.Unmarshal(b, &in); err != nil {
+				return "", err
+			}
+			item, err := reporter.DeleteTask(ctx, in)
+			if err != nil {
+				return "", err
+			}
+			res, err := json.Marshal(item)
 			if err != nil {
 				return "", err
 			}

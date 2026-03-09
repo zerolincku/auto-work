@@ -30,7 +30,6 @@ type CreateTaskInput struct {
 	Title       string
 	Description string
 	Priority    int
-	DependsOn   []string
 	Provider    string
 }
 
@@ -39,7 +38,6 @@ type UpdateTaskInput struct {
 	Title       string
 	Description string
 	Priority    int
-	DependsOn   []string
 }
 
 func NewService(repo *repository.TaskRepository, projectRepo *repository.ProjectRepository) *Service {
@@ -80,7 +78,6 @@ func (s *Service) Create(ctx context.Context, in CreateTaskInput) (*domain.Task,
 		Description: description,
 		Priority:    in.Priority,
 		Status:      domain.TaskPending,
-		DependsOn:   dedupeStrings(in.DependsOn),
 		Provider:    "",
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -135,7 +132,6 @@ func (s *Service) Update(ctx context.Context, in UpdateTaskInput) (*domain.Task,
 	task.Title = title
 	task.Description = description
 	task.Priority = in.Priority
-	task.DependsOn = dedupeStrings(in.DependsOn)
 	if err := s.repo.UpdateNonRunningTask(ctx, task); err != nil {
 		if errors.Is(err, repository.ErrTaskNotEditable) {
 			return nil, ErrTaskNotEditable
@@ -179,21 +175,4 @@ func parseTaskStatus(status string) (domain.TaskStatus, bool) {
 	default:
 		return "", false
 	}
-}
-
-func dedupeStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		v := strings.TrimSpace(s)
-		if v == "" {
-			continue
-		}
-		if _, ok := seen[v]; ok {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }

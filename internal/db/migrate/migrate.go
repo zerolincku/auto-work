@@ -19,7 +19,7 @@ func Up(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 
-	currentVersion, err := getCurrentVersion(ctx, db)
+	appliedVersions, err := getAppliedVersions(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func Up(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("parse migration name %s: %w", name, err)
 		}
-		if version <= currentVersion {
+		if _, ok := appliedVersions[version]; ok {
 			continue
 		}
 		b, err := migrationFS.ReadFile(filepath.Join("sql", name))
@@ -67,6 +67,27 @@ func Up(ctx context.Context, db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func getAppliedVersions(ctx context.Context, db *sql.DB) (map[int]struct{}, error) {
+	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int]struct{})
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		out[version] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func ensureSchemaMigrationsTable(ctx context.Context, db *sql.DB) error {

@@ -97,27 +97,19 @@ func TestLoad_TelegramEnabledFlagCanForceDisable(t *testing.T) {
 	}
 }
 
-func TestLoad_MCPTransportDefaultsToHTTP(t *testing.T) {
-	t.Setenv("AUTO_WORK_MCP_TRANSPORT", "")
+func TestLoad_MCPHTTPURLDefaults(t *testing.T) {
 	t.Setenv("AUTO_WORK_MCP_HTTP_URL", "")
 
 	cfg := config.Load()
-	if cfg.MCPTransport != "http" {
-		t.Fatalf("expected default mcp transport http, got %q", cfg.MCPTransport)
-	}
 	if cfg.MCPHTTPURL != "http://127.0.0.1:39123/mcp" {
 		t.Fatalf("expected default mcp http url, got %q", cfg.MCPHTTPURL)
 	}
 }
 
-func TestLoad_MCPTransportHTTP(t *testing.T) {
-	t.Setenv("AUTO_WORK_MCP_TRANSPORT", "http")
+func TestLoad_MCPHTTPURLCanBeConfigured(t *testing.T) {
 	t.Setenv("AUTO_WORK_MCP_HTTP_URL", "http://127.0.0.1:38080/mcp")
 
 	cfg := config.Load()
-	if cfg.MCPTransport != "http" {
-		t.Fatalf("expected mcp transport=http, got %q", cfg.MCPTransport)
-	}
 	if cfg.MCPHTTPURL != "http://127.0.0.1:38080/mcp" {
 		t.Fatalf("unexpected mcp http url: %q", cfg.MCPHTTPURL)
 	}
