@@ -86,6 +86,10 @@ export function SetAutoRunEnabled(arg1, arg2) {
   return window['go']['main']['App']['SetAutoRunEnabled'](arg1, arg2);
 }
 
+export function ShowSystemNotification(arg1, arg2) {
+  return window['go']['main']['App']['ShowSystemNotification'](arg1, arg2);
+}
+
 export function UpdateGlobalSettings(arg1) {
   return window['go']['main']['App']['UpdateGlobalSettings'](arg1);
 }

@@ -353,6 +353,25 @@ body.os-windows .modal {
   gap: var(--space-1);
 }
 
+.settings-language-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--codex-color-border-soft);
+  border-radius: 16px;
+  background: #f8f9fb;
+}
+
+.settings-language-block .home-topbar-inline-icon {
+  margin-top: 10px;
+  color: #617089;
+}
+
+.settings-language-block .locale-switch {
+  flex: 1;
+}
+
 .project-ai-config {
   display: grid;
   gap: var(--space-2);
@@ -908,44 +927,42 @@ body.os-windows .modal {
 }
 
 .codex-sidebar-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-top: auto;
 }
 
-.codex-sidebar-language {
-  display: flex;
+.codex-sidebar-footer-button {
+  width: 100%;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-height: 38px;
+  gap: 10px;
+  justify-content: flex-start;
+  min-height: 44px;
+  padding: 0 14px;
   border: 1px solid var(--codex-color-border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: #ffffff;
-  padding: 0 8px;
-}
-
-.codex-sidebar-language select {
-  min-height: 28px;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  font-size: 13px;
-  font-weight: 600;
-  color: #2b3a4f;
+  color: #2d3b50;
   box-shadow: none;
+  transform: none;
 }
 
-.codex-sidebar-language select:focus-visible {
-  border: 0;
+.codex-sidebar-footer-button:hover,
+.codex-sidebar-footer-button:active {
+  border-color: #c8ced8;
   box-shadow: none;
+  transform: none;
+  filter: none;
 }
 
-.codex-sidebar-footer-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+.codex-sidebar-footer-button.is-active {
+  background: #eef1f5;
+  border-color: #d9dfe7;
+  color: #1f2a3a;
+}
+
+.codex-sidebar-footer-button span {
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .codex-main {
@@ -1045,6 +1062,13 @@ body.os-windows .modal {
   letter-spacing: -0.01em;
 }
 
+.detail-header-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .codex-main-title p {
   margin: 0;
   color: #7d8798;
@@ -1122,6 +1146,35 @@ body.os-windows .modal {
   color: #5b697f;
   font-size: 13px;
   font-weight: 600;
+}
+
+.detail-live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: var(--codex-radius-pill);
+  border: 1px solid var(--codex-color-border-soft);
+  background: #f8f9fb;
+  color: #5b697f;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.detail-live-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #546a8d;
+}
+
+.detail-live-toggle span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .codex-main-filter {
@@ -2626,17 +2679,58 @@ button:disabled {
 
 .toast {
   position: fixed;
-  top: var(--space-4);
-  right: var(--space-4);
+  top: calc(var(--window-chrome-height) + var(--space-4));
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 70;
-  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  pointer-events: auto;
   min-width: 280px;
+  width: min(420px, calc(100vw - (var(--space-4) * 2)));
   max-width: 420px;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   font-size: var(--font-size-200);
   box-shadow: 0 16px 24px rgba(28, 43, 63, 0.22);
-  animation: fade-in 0.2s ease;
+  animation: toast-fade-in 0.2s ease;
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin: -2px -6px -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: currentColor;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.72;
+  box-shadow: none;
+  transform: none;
+}
+
+.toast-dismiss:hover,
+.toast-dismiss:focus-visible {
+  background: rgba(28, 43, 63, 0.1);
+  opacity: 1;
+}
+
+.toast-dismiss:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 1px;
 }
 
 .toast-success {
@@ -3028,11 +3122,6 @@ button:disabled {
   }
 
   .codex-sidebar-footer {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .codex-sidebar-footer-actions {
     width: 100%;
   }
 
@@ -3074,15 +3163,15 @@ button:disabled {
   }
 }
 
-@keyframes fade-in {
+@keyframes toast-fade-in {
   from {
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translate(-50%, -8px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate(-50%, 0);
   }
 }
 

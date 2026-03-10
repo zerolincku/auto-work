@@ -13,6 +13,8 @@ import (
 	"auto-work/internal/systemprompt"
 )
 
+const defaultProjectAgentConcurrency = 4
+
 func (a *App) DispatchOnce(ctx context.Context, agentID, projectID string) (*DispatchResponse, error) {
 	_ = a.releaseDueRetryTasks(ctx, 50)
 	agent, err := a.resolveDispatchAgent(ctx, agentID, projectID)
@@ -173,12 +175,71 @@ func (a *App) resolveDispatchAgent(ctx context.Context, agentID, projectID strin
 	}
 
 	provider := "claude"
-	if strings.TrimSpace(projectID) != "" {
-		if project, getErr := a.projectRepo.GetByID(ctx, strings.TrimSpace(projectID)); getErr == nil && strings.TrimSpace(project.DefaultProvider) != "" {
-			provider = strings.ToLower(strings.TrimSpace(project.DefaultProvider))
+	projectID = strings.TrimSpace(projectID)
+	if projectID != "" {
+		if project, getErr := a.projectRepo.GetByID(ctx, projectID); getErr == nil {
+			if strings.TrimSpace(project.DefaultProvider) != "" {
+				provider = strings.ToLower(strings.TrimSpace(project.DefaultProvider))
+			}
+			return a.ensureProjectDispatchAgent(ctx, provider, project.ID, project.Name)
 		}
 	}
 	return a.agentRepo.GetByID(ctx, defaultAgentIDForProvider(provider))
+}
+
+func (a *App) ensureProjectDispatchAgent(ctx context.Context, provider, projectID, projectName string) (*domain.Agent, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "claude"
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return a.agentRepo.GetByID(ctx, defaultAgentIDForProvider(provider))
+	}
+
+	now := time.Now().UTC()
+	label := strings.TrimSpace(projectName)
+	if label == "" {
+		label = projectID
+	}
+	agentID := projectDispatchAgentID(provider, projectID)
+	concurrency := defaultProjectAgentConcurrency
+	if existing, err := a.agentRepo.GetByID(ctx, agentID); err == nil {
+		if existing.Concurrency > 0 {
+			concurrency = existing.Concurrency
+		}
+	} else if !errors.Is(err, repository.ErrAgentNotFound) {
+		return nil, err
+	}
+	agent := &domain.Agent{
+		ID:          agentID,
+		Name:        fmt.Sprintf("%s Project Agent (%s)", providerDisplayName(provider), label),
+		Provider:    provider,
+		Enabled:     true,
+		Concurrency: concurrency,
+		LastSeenAt:  &now,
+	}
+	if err := a.agentRepo.Upsert(ctx, agent); err != nil {
+		return nil, err
+	}
+	return agent, nil
+}
+
+func projectDispatchAgentID(provider, projectID string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "claude"
+	}
+	return fmt.Sprintf("project:%s:%s", provider, strings.TrimSpace(projectID))
+}
+
+func providerDisplayName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex":
+		return "Codex"
+	default:
+		return "Claude"
+	}
 }
 
 func (a *App) startProviderRun(ctx context.Context, agent domain.Agent, run domain.Run, task domain.Task) (int, error) {

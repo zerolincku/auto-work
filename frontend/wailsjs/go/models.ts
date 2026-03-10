@@ -90,6 +90,7 @@ export namespace app {
 	    telegram_chat_ids: string;
 	    telegram_poll_timeout: number;
 	    telegram_proxy_url: string;
+	    system_notification_mode: string;
 	    system_prompt: string;
 	    // Go type: time
 	    updated_at: any;
@@ -105,6 +106,7 @@ export namespace app {
 	        this.telegram_chat_ids = source["telegram_chat_ids"];
 	        this.telegram_poll_timeout = source["telegram_poll_timeout"];
 	        this.telegram_proxy_url = source["telegram_proxy_url"];
+	        this.system_notification_mode = source["system_notification_mode"];
 	        this.system_prompt = source["system_prompt"];
 	        this.updated_at = this.convertValues(source["updated_at"], null);
 	    }
@@ -429,6 +431,7 @@ export namespace app {
 	    telegram_chat_ids: string;
 	    telegram_poll_timeout: number;
 	    telegram_proxy_url: string;
+	    system_notification_mode: string;
 	    system_prompt: string;
 	
 	    static createFrom(source: any = {}) {
@@ -442,6 +445,7 @@ export namespace app {
 	        this.telegram_chat_ids = source["telegram_chat_ids"];
 	        this.telegram_poll_timeout = source["telegram_poll_timeout"];
 	        this.telegram_proxy_url = source["telegram_proxy_url"];
+	        this.system_notification_mode = source["system_notification_mode"];
 	        this.system_prompt = source["system_prompt"];
 	    }
 	}

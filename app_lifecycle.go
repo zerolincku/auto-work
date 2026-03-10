@@ -27,6 +27,9 @@ func (a *App) startup(ctx context.Context) {
 	backend.SetTelegramIncomingReporter(func(message telegrambot.IncomingMessage) {
 		runtime.EventsEmit(ctx, "telegram.incoming", message)
 	})
+	backend.SetFrontendRunReporter(func(notification coreapp.FrontendRunNotification) {
+		runtime.EventsEmit(ctx, "run.notification", notification)
+	})
 	a.mu.Lock()
 	a.backend = backend
 	a.startupErr = nil

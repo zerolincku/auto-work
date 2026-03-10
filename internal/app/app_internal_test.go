@@ -473,394 +473,394 @@ func TestMCPStatus_ProjectRequired(t *testing.T) {
 
 func TestMCPStatus_ClaudeConnectedByConfig(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{
-		HasAutoWork: true,
-	})
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeClaudeBinary,
+			wantArgs:    []string{"mcp", "get", autoWorkMCPServerName},
+			output:      autoWorkMCPServerName,
+		},
+	)
+	defer recorder.assertDone()
 
-	application, err := New(ctx, config.Config{
-		DatabasePath:        filepath.Join(dir, "test.db"),
-		ClaudeBinary:        claudeBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "claude-mcp-project",
-		Path:            dir,
-		DefaultProvider: "claude",
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx, project.ID)
+	status, err := application.ensureClaudeMCPStatus(context.Background())
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
-	if status.State != "connected" {
-		t.Fatalf("expected connected, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "Claude MCP 已配置") {
-		t.Fatalf("expected configured message, got %q", status.Message)
-	}
+	assertMCPStatus(t, status, "connected", "Claude MCP 已配置")
 }
 
 func TestMCPStatus_ClaudeMissingAutoAdds(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{})
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeClaudeBinary,
+			wantArgs:    []string{"mcp", "get", autoWorkMCPServerName},
+			output:      "No MCP server found with name: auto-work",
+			err:         errExitStatus1,
+		},
+		mcpCommandStep{
+			wantTimeout: mcpAddTimeout,
+			wantName:    fakeClaudeBinary,
+			wantArgs: []string{
+				"mcp", "add", "--scope", "user", "--transport", "http", autoWorkMCPServerName, testMCPHTTPURL,
+			},
+			output: "added",
+		},
+	)
+	defer recorder.assertDone()
 
-	application, err := New(ctx, config.Config{
-		DatabasePath:        filepath.Join(dir, "test.db"),
-		ClaudeBinary:        claudeBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "claude-auto-add-project",
-		Path:            dir,
-		DefaultProvider: "claude",
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx, project.ID)
+	status, err := application.ensureClaudeMCPStatus(context.Background())
 	if err != nil {
 		t.Fatalf("mcp status: %v", err)
 	}
-	if status.State != "connected" {
-		t.Fatalf("expected connected, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "已自动添加") {
-		t.Fatalf("expected auto-add message, got %q", status.Message)
-	}
+	assertMCPStatus(t, status, "connected", "已自动添加")
 }
 
 func TestMCPStatus_ClaudeAutoAddFailureIncludesReason(t *testing.T) {
 	t.Parallel()
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeClaudeBinary,
+			wantArgs:    []string{"mcp", "get", autoWorkMCPServerName},
+			output:      "No MCP server found with name: auto-work",
+			err:         errExitStatus1,
+		},
+		mcpCommandStep{
+			wantTimeout: mcpAddTimeout,
+			wantName:    fakeClaudeBinary,
+			wantArgs: []string{
+				"mcp", "add", "--scope", "user", "--transport", "http", autoWorkMCPServerName, testMCPHTTPURL,
+			},
+			output: "permission denied",
+			err:    errExitStatus1,
+		},
+	)
+	defer recorder.assertDone()
+
+	status, err := application.ensureClaudeMCPStatus(context.Background())
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	assertMCPStatus(t, status, "failed", "permission denied")
+}
+
+func TestMCPStatus_CodexConnectedByConfig(t *testing.T) {
+	t.Parallel()
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeCodexBinary,
+			wantArgs:    []string{"mcp", "list", "--json"},
+			output:      "WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)\n[{\"name\":\"auto-work\",\"enabled\":true,\"disabled_reason\":null}]",
+		},
+	)
+	defer recorder.assertDone()
+
+	status, err := application.ensureCodexMCPStatus(context.Background())
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	assertMCPStatus(t, status, "connected", "Codex MCP 已配置")
+}
+
+func TestMCPStatus_CodexMissingAutoAdds(t *testing.T) {
+	t.Parallel()
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeCodexBinary,
+			wantArgs:    []string{"mcp", "list", "--json"},
+			output:      "[]",
+		},
+		mcpCommandStep{
+			wantTimeout: mcpAddTimeout,
+			wantName:    fakeCodexBinary,
+			wantArgs:    []string{"mcp", "add", "--url", testMCPHTTPURL, autoWorkMCPServerName},
+			output:      "added",
+		},
+	)
+	defer recorder.assertDone()
+
+	status, err := application.ensureCodexMCPStatus(context.Background())
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	assertMCPStatus(t, status, "connected", "已自动添加")
+}
+
+func TestMCPStatus_CodexAutoAddFailureIncludesReason(t *testing.T) {
+	t.Parallel()
+	application, recorder := newMCPStatusTestApp(t,
+		mcpCommandStep{
+			wantTimeout: mcpCheckTimeout,
+			wantName:    fakeCodexBinary,
+			wantArgs:    []string{"mcp", "list", "--json"},
+			output:      "[]",
+		},
+		mcpCommandStep{
+			wantTimeout: mcpAddTimeout,
+			wantName:    fakeCodexBinary,
+			wantArgs:    []string{"mcp", "add", "--url", testMCPHTTPURL, autoWorkMCPServerName},
+			output:      "permission denied",
+			err:         errExitStatus1,
+		},
+	)
+	defer recorder.assertDone()
+
+	status, err := application.ensureCodexMCPStatus(context.Background())
+	if err != nil {
+		t.Fatalf("mcp status: %v", err)
+	}
+	assertMCPStatus(t, status, "failed", "permission denied")
+}
+
+func TestDispatchOnce_SameProviderDifferentProjectsDoNotBlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
-	claudeBinary := writeFakeClaudeBinary(t, dir, fakeClaudeOptions{
-		AddFails:  true,
-		AddReason: "permission denied",
-	})
+	claudeBinary := writeFakeRunnerBinary(t, dir, "fake-claude-runner.sh", 3*time.Second)
 
 	application, err := New(ctx, config.Config{
 		DatabasePath:        filepath.Join(dir, "test.db"),
 		ClaudeBinary:        claudeBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
+		RunClaudeOnDispatch: true,
+		RequireMCPCallback:  false,
 	})
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
+	projectADir := filepath.Join(dir, "project-a")
+	projectBDir := filepath.Join(dir, "project-b")
+	if err := os.MkdirAll(projectADir, 0o755); err != nil {
+		t.Fatalf("mkdir project a: %v", err)
+	}
+	if err := os.MkdirAll(projectBDir, 0o755); err != nil {
+		t.Fatalf("mkdir project b: %v", err)
+	}
+
+	projectA, err := application.CreateProject(ctx, CreateProjectRequest{
+		Name:            "project-a",
+		Path:            projectADir,
+		DefaultProvider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create project a: %v", err)
+	}
+	projectB, err := application.CreateProject(ctx, CreateProjectRequest{
+		Name:            "project-b",
+		Path:            projectBDir,
+		DefaultProvider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create project b: %v", err)
+	}
+
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: projectA.ID, Title: "task-a", Description: "desc-a"}); err != nil {
+		t.Fatalf("create task a: %v", err)
+	}
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: projectB.ID, Title: "task-b", Description: "desc-b"}); err != nil {
+		t.Fatalf("create task b: %v", err)
+	}
+
+	respA, err := application.DispatchOnce(ctx, "", projectA.ID)
+	if err != nil {
+		t.Fatalf("dispatch project a: %v", err)
+	}
+	if respA == nil || !respA.Claimed {
+		t.Fatalf("expected project a claimed, got %#v", respA)
+	}
+
+	respB, err := application.DispatchOnce(ctx, "", projectB.ID)
+	if err != nil {
+		t.Fatalf("dispatch project b: %v", err)
+	}
+	if respB == nil || !respB.Claimed {
+		t.Fatalf("expected project b claimed, got %#v", respB)
+	}
+
+	running, err := application.ListRunningRuns(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("list running runs: %v", err)
+	}
+	if len(running) != 2 {
+		t.Fatalf("expected 2 running runs, got %d", len(running))
+	}
+
+	agentByProject := map[string]string{}
+	for _, item := range running {
+		agentByProject[item.ProjectID] = item.AgentID
+	}
+	if got := agentByProject[projectA.ID]; got != projectDispatchAgentID("claude", projectA.ID) {
+		t.Fatalf("unexpected project a agent id: %q", got)
+	}
+	if got := agentByProject[projectB.ID]; got != projectDispatchAgentID("claude", projectB.ID) {
+		t.Fatalf("unexpected project b agent id: %q", got)
+	}
+	if agentByProject[projectA.ID] == agentByProject[projectB.ID] {
+		t.Fatalf("expected different agents per project, got same agent %q", agentByProject[projectA.ID])
+	}
+}
+
+func TestDispatchProjectAvailableTasks_SameProviderProjectsClaimIndependently(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	claudeBinary := writeFakeRunnerBinary(t, dir, "fake-claude-auto-runner.sh", 3*time.Second)
+
+	application, err := New(ctx, config.Config{
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		ClaudeBinary:        claudeBinary,
+		RunClaudeOnDispatch: true,
+		RequireMCPCallback:  false,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	projectADir := filepath.Join(dir, "auto-project-a")
+	projectBDir := filepath.Join(dir, "auto-project-b")
+	if err := os.MkdirAll(projectADir, 0o755); err != nil {
+		t.Fatalf("mkdir auto project a: %v", err)
+	}
+	if err := os.MkdirAll(projectBDir, 0o755); err != nil {
+		t.Fatalf("mkdir auto project b: %v", err)
+	}
+
+	projectA, err := application.CreateProject(ctx, CreateProjectRequest{
+		Name:            "auto-project-a",
+		Path:            projectADir,
+		DefaultProvider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create auto project a: %v", err)
+	}
+	projectB, err := application.CreateProject(ctx, CreateProjectRequest{
+		Name:            "auto-project-b",
+		Path:            projectBDir,
+		DefaultProvider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create auto project b: %v", err)
+	}
+
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: projectA.ID, Title: "auto-task-a", Description: "desc-a"}); err != nil {
+		t.Fatalf("create auto task a: %v", err)
+	}
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: projectB.ID, Title: "auto-task-b", Description: "desc-b"}); err != nil {
+		t.Fatalf("create auto task b: %v", err)
+	}
+
+	claimedA := application.dispatchProjectAvailableTasks(ctx, projectA.ID, autoDispatchProjectBurstLimit)
+	claimedB := application.dispatchProjectAvailableTasks(ctx, projectB.ID, autoDispatchProjectBurstLimit)
+	if claimedA != 1 || claimedB != 1 {
+		t.Fatalf("expected each project helper to claim 1 task, got projectA=%d projectB=%d", claimedA, claimedB)
+	}
+
+	running, err := application.ListRunningRuns(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("list running runs: %v", err)
+	}
+	if len(running) != 2 {
+		t.Fatalf("expected 2 running runs across projects, got %d", len(running))
+	}
+	for _, item := range running {
+		expectedAgentID := projectDispatchAgentID("claude", item.ProjectID)
+		if item.AgentID != expectedAgentID {
+			t.Fatalf("unexpected agent id for project %s: got %q want %q", item.ProjectID, item.AgentID, expectedAgentID)
+		}
+	}
+}
+
+func TestDispatchProjectAvailableTasks_SameProjectSamePriorityClaimsConcurrently(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	claudeBinary := writeFakeRunnerBinary(t, dir, "fake-claude-same-project-runner.sh", 3*time.Second)
+
+	application, err := New(ctx, config.Config{
+		DatabasePath:        filepath.Join(dir, "test.db"),
+		ClaudeBinary:        claudeBinary,
+		RunClaudeOnDispatch: true,
+		RequireMCPCallback:  false,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	projectDir := filepath.Join(dir, "same-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir same project dir: %v", err)
+	}
 	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "claude-auto-add-failed-project",
-		Path:            dir,
+		Name:            "same-project",
+		Path:            projectDir,
 		DefaultProvider: "claude",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
-	status, err := application.MCPStatus(ctx, project.ID)
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: project.ID, Title: "task-a", Description: "desc-a", Priority: 100}); err != nil {
+		t.Fatalf("create task a: %v", err)
+	}
+	if _, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: project.ID, Title: "task-b", Description: "desc-b", Priority: 100}); err != nil {
+		t.Fatalf("create task b: %v", err)
+	}
+	third, err := application.CreateTask(ctx, CreateTaskRequest{ProjectID: project.ID, Title: "task-c", Description: "desc-c", Priority: 200})
 	if err != nil {
-		t.Fatalf("mcp status: %v", err)
+		t.Fatalf("create task c: %v", err)
 	}
-	if status.State != "failed" {
-		t.Fatalf("expected failed, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "permission denied") {
-		t.Fatalf("expected add failure reason, got %q", status.Message)
-	}
-}
 
-func TestMCPStatus_CodexConnectedByConfig(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{
-		HasAutoWork: true,
-		WarnOnList:  true,
-	})
+	claimed := application.dispatchProjectAvailableTasks(ctx, project.ID, autoDispatchProjectBurstLimit)
+	if claimed != 2 {
+		t.Fatalf("expected helper to claim 2 same-priority tasks, got %d", claimed)
+	}
 
-	application, err := New(ctx, config.Config{
-		DatabasePath:        filepath.Join(dir, "test.db"),
-		CodexBinary:         codexBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
+	running, err := application.ListRunningRuns(ctx, project.ID, 10)
 	if err != nil {
-		t.Fatalf("new app: %v", err)
+		t.Fatalf("list running runs: %v", err)
 	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "codex-configured-project",
-		Path:            dir,
-		DefaultProvider: "codex",
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
+	if len(running) != 2 {
+		t.Fatalf("expected 2 same-priority running runs, got %d", len(running))
 	}
-
-	status, err := application.MCPStatus(ctx, project.ID)
-	if err != nil {
-		t.Fatalf("mcp status: %v", err)
-	}
-	if status.State != "connected" {
-		t.Fatalf("expected connected, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "Codex MCP 已配置") {
-		t.Fatalf("expected configured message, got %q", status.Message)
-	}
-}
-
-func TestMCPStatus_CodexMissingAutoAdds(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{})
-
-	application, err := New(ctx, config.Config{
-		DatabasePath:        filepath.Join(dir, "test.db"),
-		CodexBinary:         codexBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "codex-auto-add-project",
-		Path:            dir,
-		DefaultProvider: "codex",
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx, project.ID)
-	if err != nil {
-		t.Fatalf("mcp status: %v", err)
-	}
-	if status.State != "connected" {
-		t.Fatalf("expected connected, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "已自动添加") {
-		t.Fatalf("expected auto-add message, got %q", status.Message)
-	}
-}
-
-func TestMCPStatus_CodexAutoAddFailureIncludesReason(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	codexBinary := writeFakeCodexBinary(t, dir, fakeCodexOptions{
-		AddFails:  true,
-		AddReason: "permission denied",
-	})
-
-	application, err := New(ctx, config.Config{
-		DatabasePath:        filepath.Join(dir, "test.db"),
-		CodexBinary:         codexBinary,
-		RunClaudeOnDispatch: false,
-		MCPHTTPURL:          "http://127.0.0.1:0/mcp",
-		EnableMCPCallback:   true,
-	})
-	if err != nil {
-		t.Fatalf("new app: %v", err)
-	}
-	t.Cleanup(func() { _ = application.Close() })
-
-	project, err := application.CreateProject(ctx, CreateProjectRequest{
-		Name:            "codex-auto-add-failed-project",
-		Path:            dir,
-		DefaultProvider: "codex",
-	})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	status, err := application.MCPStatus(ctx, project.ID)
-	if err != nil {
-		t.Fatalf("mcp status: %v", err)
-	}
-	if status.State != "failed" {
-		t.Fatalf("expected failed, got %s", status.State)
-	}
-	if !strings.Contains(status.Message, "permission denied") {
-		t.Fatalf("expected add failure reason, got %q", status.Message)
-	}
-}
-
-type fakeClaudeOptions struct {
-	HasAutoWork bool
-	AddFails    bool
-	AddReason   string
-}
-
-type fakeCodexOptions struct {
-	HasAutoWork bool
-	AddFails    bool
-	AddReason   string
-	WarnOnList  bool
-}
-
-func writeFakeClaudeBinary(t *testing.T, dir string, opts fakeClaudeOptions) string {
-	t.Helper()
-	stateFile := filepath.Join(dir, "claude-auto-work.state")
-	if opts.HasAutoWork {
-		if err := os.WriteFile(stateFile, []byte("present\n"), 0o644); err != nil {
-			t.Fatalf("write claude state file: %v", err)
+	for _, item := range running {
+		if item.AgentID != projectDispatchAgentID("claude", project.ID) {
+			t.Fatalf("unexpected agent id: %q", item.AgentID)
 		}
 	}
-	addReason := opts.AddReason
-	if addReason == "" {
-		addReason = "permission denied"
+
+	items, err := application.ListTasks(ctx, "", "", project.ID, 10)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, item := range items {
+		statusByID[item.ID] = string(item.Status)
+	}
+	if statusByID[third.ID] != "pending" {
+		t.Fatalf("expected lower-priority task pending while same-priority batch running, got %q", statusByID[third.ID])
+	}
+}
+
+func writeFakeRunnerBinary(t *testing.T, dir, name string, sleepFor time.Duration) string {
+	t.Helper()
+	seconds := int(sleepFor / time.Second)
+	if seconds <= 0 {
+		seconds = 1
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
-STATE_FILE=%q
-ADD_FAILS=%q
-ADD_REASON=%q
-
-if [ "$1" != "mcp" ]; then
-  echo "unsupported command: $1" >&2
-  exit 1
-fi
-shift
-
-case "$1" in
-  get)
-    shift
-    if [ "$1" != "auto-work" ]; then
-      echo "unexpected server: $1" >&2
-      exit 1
-    fi
-    if [ -f "$STATE_FILE" ]; then
-      echo "auto-work"
-      exit 0
-    fi
-    echo "No MCP server found with name: auto-work" >&2
-    exit 1
-    ;;
-  add)
-    shift
-    if [ "$1" = "--scope" ]; then
-      shift 2
-    fi
-    if [ "$1" = "--transport" ]; then
-      shift 2
-    fi
-    if [ "$1" != "auto-work" ]; then
-      echo "unexpected server: $1" >&2
-      exit 1
-    fi
-    if [ "$ADD_FAILS" = "1" ]; then
-      echo "$ADD_REASON" >&2
-      exit 1
-    fi
-    : > "$STATE_FILE"
-    echo "added"
-    ;;
-  *)
-    echo "unsupported mcp subcommand: $1" >&2
-    exit 1
-    ;;
-esac
-`, stateFile, boolString(opts.AddFails), addReason)
-	return writeExecutableScript(t, dir, "fake-claude.sh", script)
-}
-
-func writeFakeCodexBinary(t *testing.T, dir string, opts fakeCodexOptions) string {
-	t.Helper()
-	stateFile := filepath.Join(dir, "codex-auto-work.state")
-	if opts.HasAutoWork {
-		if err := os.WriteFile(stateFile, []byte("present\n"), 0o644); err != nil {
-			t.Fatalf("write codex state file: %v", err)
-		}
-	}
-	addReason := opts.AddReason
-	if addReason == "" {
-		addReason = "permission denied"
-	}
-	script := fmt.Sprintf(`#!/bin/sh
-set -eu
-STATE_FILE=%q
-ADD_FAILS=%q
-ADD_REASON=%q
-WARN_ON_LIST=%q
-
-if [ "$1" != "mcp" ]; then
-  echo "unsupported command: $1" >&2
-  exit 1
-fi
-shift
-
-case "$1" in
-  list)
-    if [ "$WARN_ON_LIST" = "1" ]; then
-      echo "WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)" >&2
-    fi
-    if [ -f "$STATE_FILE" ]; then
-      printf '%%s\n' '[{"name":"auto-work","enabled":true,"disabled_reason":null}]'
-    else
-      printf '%%s\n' '[]'
-    fi
-    ;;
-  add)
-    shift
-    if [ "$1" != "--url" ]; then
-      echo "missing --url" >&2
-      exit 1
-    fi
-    shift
-    if [ "$1" = "" ]; then
-      echo "missing url value" >&2
-      exit 1
-    fi
-    shift
-    if [ "$1" != "auto-work" ]; then
-      echo "unexpected server: $1" >&2
-      exit 1
-    fi
-    if [ "$ADD_FAILS" = "1" ]; then
-      echo "$ADD_REASON" >&2
-      exit 1
-    fi
-    : > "$STATE_FILE"
-    echo "added"
-    ;;
-  *)
-    echo "unsupported mcp subcommand: $1" >&2
-    exit 1
-    ;;
-esac
-`, stateFile, boolString(opts.AddFails), addReason, boolString(opts.WarnOnList))
-	return writeExecutableScript(t, dir, "fake-codex.sh", script)
+sleep %d
+printf '%%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","permission_denials":[]}'
+`, seconds)
+	return writeExecutableScript(t, dir, name, script)
 }
 
 func writeExecutableScript(t *testing.T, dir, name, content string) string {

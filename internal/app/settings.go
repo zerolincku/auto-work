@@ -13,6 +13,12 @@ import (
 	"auto-work/internal/repository"
 )
 
+const (
+	systemNotificationModeNever         = "never"
+	systemNotificationModeWhenUnfocused = "when_unfocused"
+	systemNotificationModeAlways        = "always"
+)
+
 func (a *App) GetGlobalSettings(ctx context.Context) (*GlobalSettingsView, error) {
 	settings, err := a.settingsRepo.Get(ctx)
 	if err != nil {
@@ -46,21 +52,29 @@ func (a *App) UpdateGlobalSettings(ctx context.Context, req UpdateGlobalSettings
 		return nil, err
 	}
 	systemPrompt := settings.SystemPrompt
+	systemNotificationMode := normalizeSystemNotificationMode(settings.SystemNotificationMode)
+	if rawMode := strings.TrimSpace(req.SystemNotificationMode); rawMode != "" {
+		systemNotificationMode, err = parseSystemNotificationMode(rawMode)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	if err := a.settingsRepo.UpdateTelegram(ctx, req.TelegramEnabled, token, chatIDs, pollTimeout, proxyURL, systemPrompt); err != nil {
+	if err := a.settingsRepo.Update(ctx, req.TelegramEnabled, token, chatIDs, pollTimeout, proxyURL, systemNotificationMode, systemPrompt); err != nil {
 		return nil, err
 	}
 	if _, err := a.reloadTelegramFromDB(ctx); err != nil {
 		return nil, fmt.Errorf("配置已保存，但 Telegram 启动失败: %w", err)
 	}
 	return &GlobalSettingsView{
-		TelegramEnabled:     req.TelegramEnabled,
-		TelegramBotToken:    token,
-		TelegramChatIDs:     chatIDs,
-		TelegramPollTimeout: pollTimeout,
-		TelegramProxyURL:    proxyURL,
-		SystemPrompt:        systemPrompt,
-		UpdatedAt:           time.Now().UTC(),
+		TelegramEnabled:        req.TelegramEnabled,
+		TelegramBotToken:       token,
+		TelegramChatIDs:        chatIDs,
+		TelegramPollTimeout:    pollTimeout,
+		TelegramProxyURL:       proxyURL,
+		SystemNotificationMode: systemNotificationMode,
+		SystemPrompt:           systemPrompt,
+		UpdatedAt:              time.Now().UTC(),
 	}, nil
 }
 
@@ -163,13 +177,40 @@ func mapGlobalSettings(settings *repository.GlobalSettings) *GlobalSettingsView 
 		return nil
 	}
 	return &GlobalSettingsView{
-		TelegramEnabled:     settings.TelegramEnabled,
-		TelegramBotToken:    settings.TelegramBotToken,
-		TelegramChatIDs:     settings.TelegramChatIDs,
-		TelegramPollTimeout: settings.TelegramPollTimeout,
-		TelegramProxyURL:    settings.TelegramProxyURL,
-		SystemPrompt:        settings.SystemPrompt,
-		UpdatedAt:           settings.UpdatedAt,
+		TelegramEnabled:        settings.TelegramEnabled,
+		TelegramBotToken:       settings.TelegramBotToken,
+		TelegramChatIDs:        settings.TelegramChatIDs,
+		TelegramPollTimeout:    settings.TelegramPollTimeout,
+		TelegramProxyURL:       settings.TelegramProxyURL,
+		SystemNotificationMode: normalizeSystemNotificationMode(settings.SystemNotificationMode),
+		SystemPrompt:           settings.SystemPrompt,
+		UpdatedAt:              settings.UpdatedAt,
+	}
+}
+
+func normalizeSystemNotificationMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case systemNotificationModeNever:
+		return systemNotificationModeNever
+	case systemNotificationModeWhenUnfocused, "unfocused", "app_unfocused":
+		return systemNotificationModeWhenUnfocused
+	case "", systemNotificationModeAlways:
+		return systemNotificationModeAlways
+	default:
+		return systemNotificationModeAlways
+	}
+}
+
+func parseSystemNotificationMode(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case systemNotificationModeNever:
+		return systemNotificationModeNever, nil
+	case systemNotificationModeWhenUnfocused, "unfocused", "app_unfocused":
+		return systemNotificationModeWhenUnfocused, nil
+	case systemNotificationModeAlways:
+		return systemNotificationModeAlways, nil
+	default:
+		return "", errors.New("无效系统通知模式")
 	}
 }
 

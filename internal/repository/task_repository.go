@@ -33,6 +33,13 @@ func NewTaskRepository(db *sql.DB) *TaskRepository {
 }
 
 func (r *TaskRepository) Create(ctx context.Context, task *domain.Task) error {
+	if strings.TrimSpace(task.ID) == "" {
+		id, err := NextID(ctx, r.db, "tasks")
+		if err != nil {
+			return err
+		}
+		task.ID = id
+	}
 	if task.CreatedAt.IsZero() {
 		now := time.Now().UTC()
 		task.CreatedAt = now
@@ -352,19 +359,13 @@ func (r *TaskRepository) CreateBatchWithReorder(ctx context.Context, projectID s
 	for _, task := range existing[:insertPos] {
 		orderedIDs = append(orderedIDs, task.ID)
 	}
-	for _, task := range tasks {
-		if task == nil || strings.TrimSpace(task.ID) == "" {
-			return ErrTaskNotFound
-		}
-		orderedIDs = append(orderedIDs, task.ID)
-	}
-	for _, task := range existing[insertPos:] {
-		orderedIDs = append(orderedIDs, task.ID)
-	}
-	priorityByID := buildPriorityByID(orderedIDs, taskPriorityBase)
 
 	now := time.Now().UTC()
+	insertedIDs := make([]string, 0, len(tasks))
 	for _, task := range tasks {
+		if task == nil {
+			return ErrTaskNotFound
+		}
 		if task.CreatedAt.IsZero() {
 			task.CreatedAt = now
 		}
@@ -372,13 +373,25 @@ func (r *TaskRepository) CreateBatchWithReorder(ctx context.Context, projectID s
 			task.UpdatedAt = task.CreatedAt
 		}
 		task.ProjectID = projectID
-		task.Priority = priorityByID[task.ID]
+		task.Priority = taskPriorityBase + len(existing) + len(insertedIDs)
 		if err := insertTaskTx(ctx, tx, task); err != nil {
 			return err
 		}
+		insertedIDs = append(insertedIDs, task.ID)
 	}
+	orderedIDs = append(orderedIDs, insertedIDs...)
+	for _, task := range existing[insertPos:] {
+		orderedIDs = append(orderedIDs, task.ID)
+	}
+	priorityByID := buildPriorityByID(orderedIDs, taskPriorityBase)
 	if err := applyPriorityOrderTx(ctx, tx, orderedIDs, priorityByID); err != nil {
 		return err
+	}
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		task.Priority = priorityByID[task.ID]
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -803,6 +816,13 @@ FROM tasks WHERE id = ?`, id)
 func insertTaskTx(ctx context.Context, tx *sql.Tx, task *domain.Task) error {
 	if task == nil {
 		return ErrTaskNotFound
+	}
+	if strings.TrimSpace(task.ID) == "" {
+		id, err := NextIDTx(ctx, tx, "tasks")
+		if err != nil {
+			return err
+		}
+		task.ID = id
 	}
 	if task.Status == "" {
 		task.Status = domain.TaskPending

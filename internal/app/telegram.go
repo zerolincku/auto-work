@@ -45,6 +45,7 @@ func (a *App) notifyTaskStarted(task *domain.Task, run *domain.Run, agent domain
 	if task == nil || run == nil {
 		return
 	}
+	a.notifyTaskStartedFrontend(task, run, agent)
 	projectLabel := a.projectLabelForNotify(context.Background(), task.ProjectID)
 	provider := strings.TrimSpace(task.Provider)
 	if provider == "" {

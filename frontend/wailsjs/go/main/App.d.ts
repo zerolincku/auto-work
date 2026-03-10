@@ -45,6 +45,8 @@ export function RetryTask(arg1:string):Promise<void>;
 
 export function SetAutoRunEnabled(arg1:string,arg2:boolean):Promise<boolean>;
 
+export function ShowSystemNotification(arg1:string,arg2:string):Promise<void>;
+
 export function UpdateGlobalSettings(arg1:app.UpdateGlobalSettingsRequest):Promise<app.GlobalSettingsView>;
 
 export function UpdateProject(arg1:app.UpdateProjectRequest):Promise<domain.Project>;

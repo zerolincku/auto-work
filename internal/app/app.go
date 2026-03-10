@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"auto-work/internal/applog"
 	"auto-work/internal/config"
 	"auto-work/internal/db"
@@ -34,6 +32,8 @@ type App struct {
 	cfg config.Config
 	db  *sql.DB
 
+	commandRunner commandRunner
+
 	taskRepo     *repository.TaskRepository
 	projectRepo  *repository.ProjectRepository
 	settingsRepo *repository.GlobalSettingsRepository
@@ -51,6 +51,8 @@ type App struct {
 	telegramMu               sync.Mutex
 	telegramIncomingMu       sync.RWMutex
 	telegramIncomingReporter func(telegrambot.IncomingMessage)
+	frontendRunNotifyMu      sync.RWMutex
+	frontendRunReporter      func(FrontendRunNotification)
 	frontendChangeMu         sync.Mutex
 	runFrontendBaseline      map[string]frontendRunBaseline
 	mcpCheckMu               sync.Mutex
@@ -96,6 +98,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	a := &App{
 		cfg:                  cfg,
 		db:                   sqlDB,
+		commandRunner:        defaultCommandRunner,
 		taskRepo:             taskRepo,
 		projectRepo:          projectRepo,
 		settingsRepo:         settingsRepo,
@@ -110,7 +113,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		log:                  appLogger,
 	}
 	a.log.Infof("startup begin db=%s log=%s", strings.TrimSpace(cfg.DatabasePath), appLogger.Path())
-	a.dispatcher.SetRunFinishedHook(a.onRunFinishedTelegramNotify)
+	a.dispatcher.SetRunFinishedHook(a.onRunFinishedNotify)
 
 	mcpBaseURL := strings.TrimSpace(cfg.MCPHTTPURL)
 	if cfg.EnableMCPCallback {
@@ -146,12 +149,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		OnExit:            a.onCodexExit,
 	})
 	if err := a.settingsRepo.EnsureDefaults(ctx, repository.GlobalSettings{
-		TelegramEnabled:     cfg.TelegramEnabled,
-		TelegramBotToken:    strings.TrimSpace(cfg.TelegramBotToken),
-		TelegramChatIDs:     normalizeTelegramChatIDs(cfg.TelegramChatIDs),
-		TelegramPollTimeout: cfg.TelegramPollTimeout,
-		TelegramProxyURL:    "",
-		SystemPrompt:        systemprompt.DefaultGlobalSystemPromptTemplate,
+		TelegramEnabled:        cfg.TelegramEnabled,
+		TelegramBotToken:       strings.TrimSpace(cfg.TelegramBotToken),
+		TelegramChatIDs:        normalizeTelegramChatIDs(cfg.TelegramChatIDs),
+		TelegramPollTimeout:    cfg.TelegramPollTimeout,
+		TelegramProxyURL:       "",
+		SystemNotificationMode: systemNotificationModeAlways,
+		SystemPrompt:           systemprompt.DefaultGlobalSystemPromptTemplate,
 	}); err != nil {
 		_ = sqlDB.Close()
 		_ = appLogger.Close()
@@ -186,6 +190,9 @@ func (a *App) Close() error {
 	}
 	if a.loopDone != nil {
 		<-a.loopDone
+	}
+	if a.dispatcher != nil {
+		a.dispatcher.WaitRunFinishedHooks()
 	}
 	dbErr := a.db.Close()
 	if a.log != nil {
@@ -282,8 +289,8 @@ func (a *App) ensureDefaultAgents(ctx context.Context) error {
 }
 
 const (
-	defaultClaudeAgentID = "agent-claude-default"
-	defaultCodexAgentID  = "agent-codex-default"
+	defaultClaudeAgentID = "1"
+	defaultCodexAgentID  = "2"
 )
 
 func defaultAgentIDForProvider(provider string) string {
@@ -293,8 +300,4 @@ func defaultAgentIDForProvider(provider string) string {
 	default:
 		return defaultClaudeAgentID
 	}
-}
-
-func NewID() string {
-	return uuid.NewString()
 }

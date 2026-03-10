@@ -122,7 +122,9 @@ func applyMigration(ctx context.Context, db *sql.DB, version int, name, migratio
 	}()
 
 	if _, err = tx.ExecContext(ctx, migrationSQL); err != nil {
-		return fmt.Errorf("execute migration %d (%s): %w", version, name, err)
+		if !shouldIgnoreExecError(name, err) {
+			return fmt.Errorf("execute migration %d (%s): %w", version, name, err)
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name) VALUES (?, ?)`, version, name); err != nil {
 		return fmt.Errorf("record migration %d (%s): %w", version, name, err)
@@ -138,4 +140,15 @@ func parseVersion(name string) (int, error) {
 		return 0, fmt.Errorf("invalid migration filename")
 	}
 	return strconv.Atoi(parts[0])
+}
+
+func shouldIgnoreExecError(name string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if name != "0020_drop_task_depends_on.sql" {
+		return false
+	}
+	lowered := strings.ToLower(err.Error())
+	return strings.Contains(lowered, "no such column") && strings.Contains(lowered, "depends_on")
 }

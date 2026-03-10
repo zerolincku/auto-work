@@ -28,6 +28,7 @@ func TestUp_CreatesCoreTables(t *testing.T) {
 		"schema_migrations",
 		"projects",
 		"global_settings",
+		"id_sequences",
 		"tasks",
 		"agents",
 		"runs",
@@ -54,6 +55,17 @@ WHERE name = 'system_prompt'`).Scan(&systemPromptColumnCount); err != nil {
 	}
 	if systemPromptColumnCount != 1 {
 		t.Fatalf("global_settings.system_prompt column not found")
+	}
+
+	var systemNotificationModeColumnCount int
+	if err := sqlDB.QueryRow(`
+SELECT COUNT(1)
+FROM pragma_table_info('global_settings')
+WHERE name = 'system_notification_mode'`).Scan(&systemNotificationModeColumnCount); err != nil {
+		t.Fatalf("query global_settings system_notification_mode columns: %v", err)
+	}
+	if systemNotificationModeColumnCount != 1 {
+		t.Fatalf("global_settings.system_notification_mode column not found")
 	}
 
 	var projectSystemPromptColumnCount int
@@ -155,5 +167,114 @@ ON CONFLICT(id) DO UPDATE SET system_prompt = excluded.system_prompt, updated_at
 	}
 	if got != systemprompt.DefaultGlobalSystemPromptTemplate {
 		t.Fatalf("unexpected system prompt after version 19 migration: %q", got)
+	}
+}
+
+func TestUp_RekeysProjectsAndClearsRuntimeDataAtVersion22(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqlDB, err := db.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if err := migrate.Up(ctx, sqlDB); err != nil {
+		t.Fatalf("initial migrate up: %v", err)
+	}
+
+	now := "2026-03-10 10:00:00"
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO projects(id,name,path,default_provider,model,system_prompt,failure_policy,auto_dispatch_enabled,frontend_screenshot_report_enabled,created_at,updated_at)
+VALUES
+  ('proj-old-b','Project B','/tmp/project-b','codex','','','continue',1,0,?,?),
+  ('proj-old-a','Project A','/tmp/project-a','claude','','','block',0,1,DATETIME(?, '-1 minute'),DATETIME(?, '-1 minute'))
+`, now, now, now, now); err != nil {
+		t.Fatalf("seed projects: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO agents(id,name,provider,enabled,concurrency,created_at,updated_at)
+VALUES('agent-old','Old Agent','claude',1,1,?,?)`, now, now); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO tasks(id,project_id,title,description,priority,status,provider,retry_count,max_retries,next_retry_at,created_at,updated_at)
+VALUES('task-old','proj-old-a','Old Task','desc',100,'failed','claude',1,0,?, ?, ?)`, now, now, now); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
+VALUES('run-old','task-old','agent-old',1,'failed',?, 'prompt', ?, ?)`, now, now, now); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO run_events(id,run_id,ts,kind,payload)
+VALUES('event-old','run-old',?,'system.done','ok')`, now); err != nil {
+		t.Fatalf("seed run event: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO artifacts(id,run_id,kind,value,created_at)
+VALUES('artifact-old','run-old','log','artifact',?)`, now); err != nil {
+		t.Fatalf("seed artifact: %v", err)
+	}
+
+	if _, err := sqlDB.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version IN (22, 23)`); err != nil {
+		t.Fatalf("delete version 22/23 migration records: %v", err)
+	}
+
+	if err := migrate.Up(ctx, sqlDB); err != nil {
+		t.Fatalf("re-run migrate up: %v", err)
+	}
+
+	rows, err := sqlDB.QueryContext(ctx, `SELECT id, name, path FROM projects ORDER BY CAST(id AS INTEGER) ASC`)
+	if err != nil {
+		t.Fatalf("query projects: %v", err)
+	}
+	defer rows.Close()
+
+	type projectRow struct {
+		ID   string
+		Name string
+		Path string
+	}
+	var projects []projectRow
+	for rows.Next() {
+		var item projectRow
+		if err := rows.Scan(&item.ID, &item.Name, &item.Path); err != nil {
+			t.Fatalf("scan project: %v", err)
+		}
+		projects = append(projects, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projects))
+	}
+	if projects[0].ID != "1" || projects[0].Name != "Project A" {
+		t.Fatalf("unexpected first project after rekey: %+v", projects[0])
+	}
+	if projects[1].ID != "2" || projects[1].Name != "Project B" {
+		t.Fatalf("unexpected second project after rekey: %+v", projects[1])
+	}
+
+	for _, table := range []string{"agents", "tasks", "runs", "run_events", "artifacts"} {
+		var count int
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(1) FROM `+table).Scan(&count); err != nil {
+			t.Fatalf("query %s count: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s cleared, got %d rows", table, count)
+		}
+	}
+
+	var nextProjectID int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT next_id FROM id_sequences WHERE scope = 'projects'`).Scan(&nextProjectID); err != nil {
+		t.Fatalf("query projects next_id: %v", err)
+	}
+	if nextProjectID != 3 {
+		t.Fatalf("expected projects next_id=3, got %d", nextProjectID)
 	}
 }

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"auto-work/internal/domain"
 	"auto-work/internal/repository"
 	"auto-work/internal/runsignal"
@@ -237,7 +235,6 @@ func (s *Service) CreateTasks(ctx context.Context, in CreateTasksInput) ([]Creat
 			return nil, ErrInvalidInput
 		}
 		createdTasks = append(createdTasks, &domain.Task{
-			ID:          uuid.NewString(),
 			ProjectID:   project.ID,
 			Title:       title,
 			Description: desc,

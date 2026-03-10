@@ -33,6 +33,8 @@ type codexMCPServerConfig struct {
 	DisabledReason *string `json:"disabled_reason"`
 }
 
+type commandRunner func(parent context.Context, timeout time.Duration, name string, args ...string) (string, error)
+
 func (a *App) MCPStatus(ctx context.Context, projectID string) (*MCPStatusView, error) {
 	if !a.cfg.EnableMCPCallback {
 		return a.newMCPStatusView(false, "disabled", mcpStatusCallbackDisabledMsg), nil
@@ -170,6 +172,14 @@ func (a *App) newMCPStatusView(enabled bool, state, message string) *MCPStatusVi
 }
 
 func (a *App) runExternalCommand(parent context.Context, timeout time.Duration, name string, args ...string) (string, error) {
+	runner := a.commandRunner
+	if runner == nil {
+		runner = defaultCommandRunner
+	}
+	return runner(parent, timeout, name, args...)
+}
+
+func defaultCommandRunner(parent context.Context, timeout time.Duration, name string, args ...string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", errors.New("command is empty")

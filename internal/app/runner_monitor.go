@@ -60,7 +60,9 @@ func (a *App) onRunnerExit(provider, runID string, exitCode int, runErr error) {
 	if reason := strings.TrimSpace(a.findNeedsInputReason(runID)); reason != "" {
 		summary := fmt.Sprintf("%s 需要人工输入", name)
 		details := fmt.Sprintf("needs_input_reason=%s", reason)
-		_ = a.dispatcher.MarkRunFinished(context.Background(), runID, domain.RunNeedsInput, domain.TaskBlocked, summary, details, &exitCode)
+		if err := a.dispatcher.MarkRunFinished(context.Background(), runID, domain.RunNeedsInput, domain.TaskBlocked, summary, details, &exitCode); err != nil {
+			a.log.Errorf("mark run finished failed run_id=%s provider=%s run_status=%s task_status=%s err=%v", runID, name, domain.RunNeedsInput, domain.TaskBlocked, err)
+		}
 		a.log.Warnf("runner needs input run_id=%s provider=%s reason=%s", runID, name, reason)
 		return
 	}
@@ -105,7 +107,10 @@ func (a *App) onRunnerExit(provider, runID string, exitCode int, runErr error) {
 			a.log.Errorf("runner exited without mcp callback run_id=%s provider=%s", runID, name)
 		}
 	}
-	_ = a.dispatcher.MarkRunFinished(context.Background(), runID, runStatus, taskStatus, summary, details, &exitCode)
+	if err := a.dispatcher.MarkRunFinished(context.Background(), runID, runStatus, taskStatus, summary, details, &exitCode); err != nil {
+		a.log.Errorf("mark run finished failed run_id=%s provider=%s run_status=%s task_status=%s err=%v", runID, name, runStatus, taskStatus, err)
+		return
+	}
 	a.log.Infof("runner process finished run_id=%s provider=%s run_status=%s task_status=%s exit_code=%d", runID, name, runStatus, taskStatus, exitCode)
 }
 
@@ -124,6 +129,7 @@ func (a *App) tryFinalizeRunWithoutMCP(runID string, exitCode int) bool {
 	_ = a.eventRepo.Append(context.Background(), runID, "system.mcp_fallback", "finalized from Claude result event without MCP callback")
 	if err := a.dispatcher.MarkRunFinished(context.Background(), runID, domain.RunDone, domain.TaskDone, summary, details, &exitCode); err != nil {
 		_ = a.eventRepo.Append(context.Background(), runID, "system.mcp_fallback_error", err.Error())
+		a.log.Errorf("mark run finished failed run_id=%s provider=%s run_status=%s task_status=%s err=%v", runID, "claude", domain.RunDone, domain.TaskDone, err)
 		return false
 	}
 	return true

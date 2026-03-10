@@ -1,4 +1,4 @@
-import { FormEvent, PropsWithChildren, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PropsWithChildren, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Environment, EventsOn, Quit, WindowIsMaximised, WindowMinimise, WindowToggleMaximise } from "../wailsjs/runtime/runtime";
 
@@ -52,17 +52,6 @@ type RunLogEvent = {
   payload: string;
 };
 
-type SystemLogEvent = {
-  id: string;
-  run_id: string;
-  task_id: string;
-  task_title: string;
-  project_id: string;
-  ts: string;
-  kind: string;
-  payload: string;
-};
-
 type DisplayLogEvent = {
   id: string;
   ts: string;
@@ -95,6 +84,22 @@ type DispatchResponse = {
   message?: string;
 };
 
+type FrontendRunNotification = {
+  kind: "started" | "finished";
+  project_id?: string;
+  project_name?: string;
+  task_id?: string;
+  task_title?: string;
+  run_id?: string;
+  status?: string;
+  run_status?: string;
+  provider?: string;
+  summary?: string;
+  attempt?: number;
+};
+
+type SystemNotificationMode = "never" | "when_unfocused" | "always";
+
 type MCPStatus = {
   enabled: boolean;
   state: "disabled" | "connected" | "failed" | "unknown";
@@ -109,6 +114,7 @@ type GlobalSettings = {
   telegram_chat_ids: string;
   telegram_poll_timeout: number;
   telegram_proxy_url: string;
+  system_notification_mode: SystemNotificationMode;
   system_prompt: string;
   updated_at?: string;
 };
@@ -123,8 +129,10 @@ type AppAPI = {
     telegram_chat_ids: string;
     telegram_poll_timeout: number;
     telegram_proxy_url: string;
+    system_notification_mode: SystemNotificationMode;
     system_prompt: string;
   }) => Promise<GlobalSettings>;
+  ShowSystemNotification: (title: string, body: string) => Promise<void>;
   AutoRunEnabled: (projectID: string) => Promise<boolean>;
   SetAutoRunEnabled: (projectID: string, enabled: boolean) => Promise<boolean>;
   CreateProject: (req: {
@@ -186,7 +194,6 @@ type AppAPI = {
   }) => Promise<void>;
   ListRunningRuns: (projectID: string, limit: number) => Promise<RunningRun[]>;
   ListRunLogs: (runID: string, limit: number) => Promise<RunLogEvent[]>;
-  ListSystemLogs: (projectID: string, limit: number) => Promise<SystemLogEvent[]>;
   GetTaskDetail: (taskID: string) => Promise<TaskDetail | null>;
 };
 
@@ -239,6 +246,20 @@ function normalizePlatform(platform?: string): OSPlatform {
       return platform!.toLowerCase() as OSPlatform;
     default:
       return "unknown";
+  }
+}
+
+function normalizeSystemNotificationMode(mode?: string): SystemNotificationMode {
+  switch ((mode || "").trim().toLowerCase()) {
+    case "never":
+      return "never";
+    case "when_unfocused":
+    case "unfocused":
+    case "app_unfocused":
+      return "when_unfocused";
+    case "always":
+    default:
+      return "always";
   }
 }
 
@@ -310,6 +331,45 @@ function formatBackendError(err: unknown, t: Translate): string {
   return raw;
 }
 
+function formatRunNotificationNotice(
+  payload: unknown,
+  t: Translate,
+): { type: "success" | "error"; text: string; title: string; body: string } | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const notice = payload as FrontendRunNotification;
+  const taskTitle = compactText(String(notice.task_title || notice.task_id || t("common.unknown")), 120);
+  const projectLabel = compactText(String(notice.project_name || notice.project_id || t("common.unknown")), 120);
+  const providerLabel = compactText(String(notice.provider || t("common.unknown")), 40);
+  const summary = compactText(String(notice.summary || ""), 180);
+  const body = summary
+    ? t("info.runNotificationBodyWithSummary", { project: projectLabel, provider: providerLabel, summary })
+    : t("info.runNotificationBody", { project: projectLabel, provider: providerLabel });
+
+  if (notice.kind === "started") {
+    const text = t("info.runStarted", { title: taskTitle, project: projectLabel });
+    return { type: "success", text, title: text, body };
+  }
+
+  switch (notice.status) {
+    case "done": {
+      const text = t("info.runCompleted", { title: taskTitle, project: projectLabel });
+      return { type: "success", text, title: text, body };
+    }
+    case "failed": {
+      const text = t("info.runFailed", { title: taskTitle, project: projectLabel });
+      return { type: "error", text, title: text, body };
+    }
+    case "blocked": {
+      const text = t("info.runBlocked", { title: taskTitle, project: projectLabel });
+      return { type: "error", text, title: text, body };
+    }
+    default:
+      return null;
+  }
+}
+
 function safeParseJSON(raw: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -327,19 +387,6 @@ function compactText(raw: string, maxLen = 300): string {
   if (!normalized) {
     return "";
   }
-  if (normalized.length <= maxLen) {
-    return normalized;
-  }
-  return `${normalized.slice(0, maxLen)}...`;
-}
-
-function formatSystemLogPayload(raw: string, maxLen = 1400): string {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const parsed = safeParseJSON(trimmed);
-  const normalized = parsed ? JSON.stringify(parsed, null, 2) : trimmed;
   if (normalized.length <= maxLen) {
     return normalized;
   }
@@ -868,8 +915,16 @@ function GlobeIcon({ className }: IconProps) {
 function SettingsIcon({ className }: IconProps) {
   return (
     <Icon className={className}>
-      <path d="M12 3.75 13.2 5.8l2.35.5 1.65 1.66-.5 2.33L18.75 12l-2.05 1.2.5 2.35-1.66 1.65-2.33-.5L12 20.25l-1.2-2.05-2.35-.5-1.65-1.66.5-2.33L5.25 12l2.05-1.2-.5-2.35 1.66-1.65 2.33.5z" />
       <circle cx="12" cy="12" r="3.1" />
+      <path d="M12 2.75v2.1" />
+      <path d="M12 19.15v2.1" />
+      <path d="m5.64 5.64 1.49 1.49" />
+      <path d="m16.87 16.87 1.49 1.49" />
+      <path d="M2.75 12h2.1" />
+      <path d="M19.15 12h2.1" />
+      <path d="m5.64 18.36 1.49-1.49" />
+      <path d="m16.87 7.13 1.49-1.49" />
+      <path d="M12 6.15a5.85 5.85 0 1 1 0 11.7 5.85 5.85 0 0 1 0-11.7Z" />
     </Icon>
   );
 }
@@ -881,17 +936,6 @@ function RefreshIcon({ className }: IconProps) {
       <path d="M4 5v5h5" />
       <path d="M4 13a8 8 0 0 0 14 4" />
       <path d="M20 19v-5h-5" />
-    </Icon>
-  );
-}
-
-function PanelIcon({ className }: IconProps) {
-  return (
-    <Icon className={className}>
-      <rect x="3" y="5" width="18" height="14" rx="2.5" />
-      <path d="M7 9h6" />
-      <path d="M7 13h10" />
-      <path d="M7 17h4" />
     </Icon>
   );
 }
@@ -909,15 +953,6 @@ function PlayIcon({ className }: IconProps) {
   return (
     <Icon className={className}>
       <path d="m8 6 10 6-10 6z" />
-    </Icon>
-  );
-}
-
-function CheckCircleIcon({ className }: IconProps) {
-  return (
-    <Icon className={className}>
-      <circle cx="12" cy="12" r="8" />
-      <path d="m8.7 12.2 2.2 2.2 4.7-5" />
     </Icon>
   );
 }
@@ -1019,7 +1054,7 @@ function App() {
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [editingTaskID, setEditingTaskID] = useState("");
-  const [page, setPage] = useState<"home" | "project" | "settings" | "systemLogs">("home");
+  const [page, setPage] = useState<"home" | "project" | "settings">("home");
   const [pendingDeleteProject, setPendingDeleteProject] = useState<{ projectID: string; projectName: string } | null>(null);
   const [pendingDeleteTask, setPendingDeleteTask] = useState<{ taskID: string; taskName: string } | null>(null);
   const [savingGlobalSettings, setSavingGlobalSettings] = useState(false);
@@ -1031,11 +1066,12 @@ function App() {
   const logStreamRef = useRef<HTMLDivElement | null>(null);
   const projectNameInputRef = useRef<HTMLInputElement | null>(null);
   const taskTitleInputRef = useRef<HTMLInputElement | null>(null);
+  const desktopNotificationRequestedRef = useRef(false);
   const [showTaskDetailModal, setShowTaskDetailModal] = useState(false);
   const [selectedDetailTask, setSelectedDetailTask] = useState<Task | null>(null);
   const [taskDetailRuns, setTaskDetailRuns] = useState<TaskRunHistory[]>([]);
-  const [systemLogs, setSystemLogs] = useState<SystemLogEvent[]>([]);
-  const [loadingSystemLogs, setLoadingSystemLogs] = useState(false);
+  const [showLiveTaskLogs, setShowLiveTaskLogs] = useState(false);
+  const liveFollowTargetRef = useRef("");
 
   const [projectName, setProjectName] = useState("");
   const [projectPath, setProjectPath] = useState("");
@@ -1064,6 +1100,7 @@ function App() {
   const [telegramChatIDs, setTelegramChatIDs] = useState("");
   const [telegramPollTimeout, setTelegramPollTimeout] = useState(30);
   const [telegramProxyURL, setTelegramProxyURL] = useState("");
+  const [systemNotificationMode, setSystemNotificationMode] = useState<SystemNotificationMode>("always");
   const [systemPrompt, setSystemPrompt] = useState("");
 
   const syncWindowMaximised = useCallback(() => {
@@ -1079,6 +1116,88 @@ function App() {
         setIsWindowMaximised(false);
       });
   }, [platform]);
+
+  const showDesktopNotification = useCallback((title: string, body: string) => {
+    if (systemNotificationMode === "never") {
+      return;
+    }
+    if (
+      systemNotificationMode === "when_unfocused" &&
+      typeof document !== "undefined" &&
+      !document.hidden &&
+      document.hasFocus()
+    ) {
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.Notification === "undefined") {
+      if (api?.ShowSystemNotification) {
+        void api.ShowSystemNotification(title, body).catch(() => {});
+      }
+      return;
+    }
+
+    const emitBrowserNotification = () => {
+      try {
+        const notice = new Notification(title, { body });
+        notice.onclick = () => {
+          window.focus();
+          notice.close();
+        };
+        window.setTimeout(() => {
+          notice.close();
+        }, NOTICE_AUTO_CLOSE_MS);
+      } catch {
+        // Ignore desktop notification failures and keep toast fallback.
+      }
+    };
+
+    if (api?.ShowSystemNotification) {
+      void api.ShowSystemNotification(title, body).catch(() => {
+        if (Notification.permission === "granted") {
+          emitBrowserNotification();
+          return;
+        }
+        if (Notification.permission === "denied" || desktopNotificationRequestedRef.current) {
+          return;
+        }
+        desktopNotificationRequestedRef.current = true;
+        void Notification.requestPermission()
+          .then((permission) => {
+            if (permission === "granted") {
+              emitBrowserNotification();
+            }
+          })
+          .catch(() => {
+            // Ignore permission request failures and keep toast fallback.
+          });
+      });
+      return;
+    }
+
+    if (Notification.permission === "granted") {
+      emitBrowserNotification();
+      return;
+    }
+    if (Notification.permission === "denied" || desktopNotificationRequestedRef.current) {
+      return;
+    }
+    desktopNotificationRequestedRef.current = true;
+    void Notification.requestPermission()
+      .then((permission) => {
+        if (permission === "granted") {
+          emitBrowserNotification();
+        }
+      })
+      .catch(() => {
+        // Ignore permission request failures and keep toast fallback.
+      });
+  }, [api, systemNotificationMode]);
+
+  const dismissToast = useCallback(() => {
+    setToast(null);
+    setInfo("");
+    setError("");
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1193,19 +1312,7 @@ function App() {
   const selectedProjectPath = selectedProjectID
     ? selectedProject?.Path || tr("home.projectPathNotFound")
     : tr("home.selectProjectFirst");
-  const systemLogScopeName = selectedProjectID
-    ? selectedProject?.Name || tr("home.projectPathNotFound")
-    : tr("systemLogs.allProjects");
-  const latestSystemLogTime = systemLogs.length > 0 ? formatDateTime(systemLogs[0].ts) : tr("common.dash");
   const dispatchModeText = autoRunEnabled ? tr("home.autoDispatchMode") : tr("home.manualDispatchMode");
-  const dispatchStatusText = useMemo(
-    () =>
-      lastRunID
-        ? tr("home.dispatchLatestRun", { runId: lastRunID.slice(0, 8) })
-        : tr("home.dispatchIdle"),
-    [currentLanguage, lastRunID, tr],
-  );
-
   const onChangeLanguage = useCallback(
     (language: string) => {
       const normalized = normalizeLanguage(language);
@@ -1350,6 +1457,35 @@ function App() {
   }, [tr]);
 
   useEffect(() => {
+    const runtimeBridge = (window as Window & { runtime?: { EventsOnMultiple?: unknown } }).runtime;
+    if (!runtimeBridge?.EventsOnMultiple) {
+      return;
+    }
+
+    let off = () => {};
+    try {
+      off = EventsOn("run.notification", (...eventData: unknown[]) => {
+        const notice = formatRunNotificationNotice(eventData[0], tr);
+        if (!notice) {
+          return;
+        }
+        if (notice.type === "error") {
+          setError(notice.text);
+        } else {
+          setInfo(notice.text);
+        }
+        showDesktopNotification(notice.title, notice.body);
+      });
+    } catch {
+      return;
+    }
+
+    return () => {
+      off();
+    };
+  }, [showDesktopNotification, tr]);
+
+  useEffect(() => {
     if (!info) return;
     const message = info;
     setToast({ type: "success", text: message });
@@ -1463,10 +1599,59 @@ function App() {
   }, [selectedRunID]);
 
   useEffect(() => {
-    const el = logStreamRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [selectedRunID, displayLogs.length, lastDisplayLogID]);
+    if (!showTaskDetailModal || !showLiveTaskLogs || !selectedDetailTask) {
+      liveFollowTargetRef.current = "";
+      return;
+    }
+
+    const currentTaskLiveRun = runningRuns.find((run) => run.status === "running" && run.task_id === selectedDetailTask.ID);
+    if (currentTaskLiveRun) {
+      liveFollowTargetRef.current = `${currentTaskLiveRun.task_id}:${currentTaskLiveRun.run_id}`;
+      if (selectedRunID !== currentTaskLiveRun.run_id) {
+        setSelectedRunID(currentTaskLiveRun.run_id);
+      }
+      return;
+    }
+
+    const nextLiveRun = runningRuns.find((run) => run.status === "running");
+    if (!nextLiveRun || nextLiveRun.task_id === selectedDetailTask.ID) {
+      liveFollowTargetRef.current = "";
+      return;
+    }
+
+    const nextTarget = `${nextLiveRun.task_id}:${nextLiveRun.run_id}`;
+    if (liveFollowTargetRef.current === nextTarget) {
+      return;
+    }
+    liveFollowTargetRef.current = nextTarget;
+    void refreshTaskDetail(nextLiveRun.task_id, nextLiveRun.run_id).catch((err) => {
+      setError(formatBackendError(err, tr));
+    });
+  }, [runningRuns, selectedDetailTask, selectedRunID, showLiveTaskLogs, showTaskDetailModal, tr]);
+
+  useLayoutEffect(() => {
+    if (!showTaskDetailModal) {
+      return;
+    }
+    let raf1 = 0;
+    let raf2 = 0;
+    let timeoutID = 0;
+    const scrollToBottom = () => {
+      const el = logStreamRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    };
+    raf1 = window.requestAnimationFrame(() => {
+      scrollToBottom();
+      raf2 = window.requestAnimationFrame(scrollToBottom);
+    });
+    timeoutID = window.setTimeout(scrollToBottom, 60);
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      window.clearTimeout(timeoutID);
+    };
+  }, [displayLogs.length, lastDisplayLogID, selectedRunID, showTaskDetailModal]);
 
   useEffect(() => {
     if (!api || !selectedProjectID) return;
@@ -1484,32 +1669,6 @@ function App() {
     };
   }, [api, selectedProjectID]);
 
-  useEffect(() => {
-    if (!api || page !== "systemLogs") return;
-    let cancelled = false;
-
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        const logs = await api.ListSystemLogs(selectedProjectID, 300);
-        if (cancelled) return;
-        setSystemLogs(logs);
-      } catch (err) {
-        if (!cancelled) {
-          setError(formatBackendError(err, tr));
-        }
-      }
-    };
-
-    void tick();
-    const timer = window.setInterval(() => {
-      void tick();
-    }, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [api, page, selectedProjectID, tr]);
 
   useEffect(() => {
     if (!api || !showTaskDetailModal || !selectedDetailTask) return;
@@ -1544,6 +1703,7 @@ function App() {
     setTaskDetailRuns([]);
     setSelectedRunID("");
     setRunLogs([]);
+    setShowLiveTaskLogs(false);
   }, []);
 
   const closeProjectModal = useCallback(() => {
@@ -1697,6 +1857,7 @@ function App() {
       setTelegramChatIDs(settings.telegram_chat_ids || "");
       setTelegramPollTimeout(Number(settings.telegram_poll_timeout) || 30);
       setTelegramProxyURL(settings.telegram_proxy_url || "");
+      setSystemNotificationMode(normalizeSystemNotificationMode(settings.system_notification_mode));
       setSystemPrompt(settings.system_prompt || "");
       return true;
     } catch (err) {
@@ -1720,23 +1881,6 @@ function App() {
     }
   }
 
-  async function refreshSystemLogs(projectID: string, showLoading = false) {
-    if (!api) return;
-    if (showLoading) {
-      setLoadingSystemLogs(true);
-    }
-    try {
-      const logs = await api.ListSystemLogs(projectID, 300);
-      setSystemLogs(logs);
-      setError("");
-    } catch (err) {
-      setError(formatBackendError(err, tr));
-    } finally {
-      if (showLoading) {
-        setLoadingSystemLogs(false);
-      }
-    }
-  }
 
   async function onCreateProject(e: FormEvent) {
     e.preventDefault();
@@ -1836,7 +1980,6 @@ function App() {
       }
       setLastRunID(res.run_id || "");
       setSelectedRunID(res.run_id || "");
-      setInfo(res.message || tr("info.dispatchedTask", { taskId: res.task_id || tr("common.unknown") }));
       await refreshTasks(selectedProjectID);
     } catch (err) {
       setError(formatBackendError(err, tr));
@@ -1934,6 +2077,7 @@ function App() {
         telegram_chat_ids: telegramChatIDs.trim(),
         telegram_poll_timeout: pollTimeoutNumber,
         telegram_proxy_url: telegramProxyURL.trim(),
+        system_notification_mode: systemNotificationMode,
         system_prompt: systemPrompt,
       });
       setTelegramEnabled(Boolean(updated.telegram_enabled));
@@ -1941,6 +2085,7 @@ function App() {
       setTelegramChatIDs(updated.telegram_chat_ids || "");
       setTelegramPollTimeout(Number(updated.telegram_poll_timeout) || 30);
       setTelegramProxyURL(updated.telegram_proxy_url || "");
+      setSystemNotificationMode(normalizeSystemNotificationMode(updated.system_notification_mode));
       setSystemPrompt(updated.system_prompt || "");
       setInfo(tr("info.globalSettingsSaved"));
     } catch (err) {
@@ -1986,6 +2131,7 @@ function App() {
   async function onOpenTaskDetail(task: Task) {
     if (!api) return;
     try {
+      setShowLiveTaskLogs(false);
       await refreshTaskDetail(task.ID);
       setShowTaskDetailModal(true);
     } catch (err) {
@@ -2034,9 +2180,6 @@ function App() {
     setProjectSettingsFormError("");
     closeTaskDetailModal();
     void refreshTasks(projectID);
-    if (page === "systemLogs") {
-      void refreshSystemLogs(projectID, true);
-    }
   }
 
   function formatTime(value?: string) {
@@ -2086,11 +2229,9 @@ function App() {
         ? tr("settings.title")
         : page === "project"
           ? tr("project.title")
-          : page === "systemLogs"
-            ? tr("systemLogs.title")
-            : tr("home.appTitle");
+          : tr("home.appTitle");
   const showWindowChrome = platform === "windows";
-  const isHomeLayoutPage = page !== "systemLogs";
+  const isHomeLayoutPage = true;
   const appPageClassName = [
     "app-page",
     `app-page-${platform}`,
@@ -2124,9 +2265,9 @@ function App() {
           <span className="badge badge-priority codex-task-badge">
             {tr("detail.priority")} · {task.Priority}
           </span>
-          <span className="badge badge-provider codex-task-badge">
-            {tr("detail.provider")} · {task.Provider || tr("common.unassigned")}
-          </span>
+          {task.Provider?.trim() && (
+            <span className="badge badge-provider codex-task-badge">{task.Provider.trim()}</span>
+          )}
         </div>
         {task.Status === "failed" && (
           <div className="codex-task-row-submeta">
@@ -2148,15 +2289,6 @@ function App() {
             onClick={() => openEditTaskModal(task)}
           >
             {tr("home.editTask")}
-          </button>
-        )}
-        {task.Status === "running" && (
-          <button
-            type="button"
-            className="codex-action-button codex-action-button-primary"
-            onClick={() => void onOpenTaskDetail(task)}
-          >
-            {tr("home.viewLiveOutput")}
           </button>
         )}
         {(task.Status === "failed" || task.Status === "blocked") && (
@@ -2260,129 +2392,23 @@ function App() {
           role={toast.type === "error" ? "alert" : "status"}
           aria-live={toast.type === "error" ? "assertive" : "polite"}
         >
-          <span>{toast.text}</span>
+          <span className="toast-text">{toast.text}</span>
+          <button
+            type="button"
+            className="toast-dismiss"
+            onClick={dismissToast}
+            aria-label={tr("common.dismiss")}
+            title={tr("common.dismiss")}
+          >
+            ×
+          </button>
         </div>
       )}
-      {page === "systemLogs" ? (
-        <main className="system-logs-page" id="main-content">
-          <header className="settings-topbar">
-            <button type="button" className="btn-ghost settings-back" onClick={() => setPage("home")}>
-              {tr("systemLogs.backHome")}
-            </button>
-            <div className="settings-title-wrap">
-              <h2>{tr("systemLogs.pageTitle")}</h2>
-              <p>{tr("systemLogs.subtitle")}</p>
-            </div>
-            <div className="status-group">
-              {renderLanguageSwitcher("system-logs")}
-              <div className="status-pill" title={healthText} aria-label={`${tr("common.systemRunning")} · ${healthText}`}>
-                <span className="status-dot" />
-                <strong>{tr("common.systemRunning")}</strong>
-              </div>
-              <div
-                className={`status-pill status-pill-mcp status-pill-${mcpStatus.state}`}
-                title={mcpStatus.message || mcpStateText[mcpStatus.state]}
-                aria-label={`${tr("detail.mcpStatusLabel")} ${mcpStateText[mcpStatus.state]}`}
-              >
-                <span className="status-dot" />
-                <strong>{mcpStateText[mcpStatus.state]}</strong>
-              </div>
-            </div>
-          </header>
-
-          <section className="panel settings-panel system-log-panel">
-            <div className="system-log-toolbar">
-              <div className="system-log-toolbar-copy">
-                <span className="dashboard-section-kicker">{tr("systemLogs.title")}</span>
-                <h2>{tr("systemLogs.pageTitle")}</h2>
-                <p>{tr("systemLogs.autoRefreshHint")}</p>
-              </div>
-              <div className="system-log-toolbar-actions">
-                <div className="system-log-live-pill" aria-label={tr("systemLogs.liveStatus")}>
-                  <span className="system-log-live-dot" aria-hidden="true" />
-                  <span>{tr("systemLogs.liveStatus")}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => void refreshSystemLogs(selectedProjectID, true)}
-                  disabled={loadingSystemLogs}
-                >
-                  {loadingSystemLogs ? tr("common.refreshing") : tr("common.refreshData")}
-                </button>
-              </div>
-            </div>
-
-            <div className="system-log-controls">
-              <div className="system-log-filter">
-                <label htmlFor="system-log-project-select">{tr("home.currentProject")}</label>
-                <select
-                  id="system-log-project-select"
-                  value={selectedProjectID}
-                  onChange={(e) => onChangeProject(e.target.value)}
-                >
-                  <option value="">{tr("systemLogs.allProjects")}</option>
-                  {projects.map((project) => (
-                    <option key={project.ID} value={project.ID}>
-                      {project.Name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="system-log-stats">
-                <div className="system-log-stat">
-                  <span>{tr("systemLogs.scopeLabel")}</span>
-                  <strong>{systemLogScopeName}</strong>
-                </div>
-                <div className="system-log-stat">
-                  <span>{tr("systemLogs.countLabel")}</span>
-                  <strong>{systemLogs.length}</strong>
-                </div>
-                <div className="system-log-stat">
-                  <span>{tr("systemLogs.latestEventLabel")}</span>
-                  <strong>{latestSystemLogTime}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="logbox system-logbox" aria-busy={loadingSystemLogs}>
-              {systemLogs.length === 0 ? (
-                <p className="empty system-log-empty">{tr("systemLogs.noLogs")}</p>
-              ) : (
-                <div className="log-stream system-log-stream" aria-live="polite">
-                  {systemLogs.map((log) => {
-                    const { source, channel } = splitLogKind(log.kind);
-                    return (
-                      <article className="system-log-card" key={log.id}>
-                        <div className="system-log-card-head">
-                          <div className="system-log-card-meta">
-                            <span className="system-log-time">{formatDateTime(log.ts)}</span>
-                            <span className={`system-log-badge system-log-badge-${channel.toLowerCase()}`}>{channel.toUpperCase()}</span>
-                            <span className="system-log-source">{source}</span>
-                          </div>
-                          <span className="system-log-target" title={`${tr("systemLogs.taskLabel")}: ${log.task_title} · ${tr("systemLogs.runLabel")}: ${log.run_id}`}>
-                            {log.task_title || tr("common.unknown")} · {log.run_id ? log.run_id.slice(0, 8) : tr("common.none")}
-                          </span>
-                        </div>
-                        <pre className="system-log-text">
-                          {formatSystemLogPayload(log.payload)}
-                        </pre>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </section>
-        </main>
-      ) : (
         <main className="home-page home-codex-layout" id="main-content">
           <section className="codex-shell">
             <aside className="codex-sidebar" aria-label={tr("home.currentProject")}>
               <header className="codex-sidebar-header">
                 <strong>{tr("home.appTitle")}</strong>
-                <span>{tr("home.projectCount")} · {projects.length}</span>
               </header>
 
               <div className="codex-sidebar-runtime">
@@ -2404,11 +2430,11 @@ function App() {
                 <button
                   type="button"
                   className="codex-action-button"
-                  onClick={openTaskModal}
+                  onClick={() => setPage("project")}
                   disabled={!selectedProjectID}
                 >
-                  <TaskIcon className="home-topbar-button-icon" />
-                  <span>{tr("home.newTask")}</span>
+                  <FolderIcon className="home-topbar-button-icon" />
+                  <span>{tr("home.projectDetail")}</span>
                 </button>
               </div>
 
@@ -2456,44 +2482,20 @@ function App() {
               </div>
 
               <div className="codex-sidebar-footer">
-                <div className="codex-sidebar-language">
-                  <label className="sr-only" htmlFor="language-select-sidebar">
-                    {tr("language.label")}
-                  </label>
-                  <GlobeIcon className="home-topbar-inline-icon" />
-                  <select
-                    id="language-select-sidebar"
-                    value={currentLanguage}
-                    onChange={(e) => onChangeLanguage(e.target.value)}
-                    aria-label={tr("language.label")}
-                  >
-                    <option value="zh-CN">{tr("language.zhCN")}</option>
-                    <option value="en-US">{tr("language.enUS")}</option>
-                  </select>
-                </div>
-                <div className="codex-sidebar-footer-actions">
-                  <button
-                    type="button"
-                    className="codex-icon-button"
-                    title={tr("systemLogs.navButton")}
-                    aria-label={tr("systemLogs.navButton")}
-                    onClick={() => setPage("systemLogs")}
-                  >
-                    <PanelIcon className="home-topbar-button-icon" />
-                  </button>
-                  <button
-                    type="button"
-                    className="codex-icon-button"
-                    title={tr("common.settings")}
-                    aria-label={tr("common.settings")}
-                    onClick={() => {
-                      setPage("settings");
-                      void refreshGlobalSettings();
-                    }}
-                  >
-                    <SettingsIcon className="home-topbar-button-icon" />
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className={`codex-sidebar-footer-button ${page === "settings" ? "is-active" : ""}`}
+                  title={tr("common.settings")}
+                  aria-label={tr("common.settings")}
+                  aria-current={page === "settings" ? "page" : undefined}
+                  onClick={() => {
+                    setPage("settings");
+                    void refreshGlobalSettings();
+                  }}
+                >
+                  <SettingsIcon className="home-topbar-button-icon" />
+                  <span>{tr("common.settings")}</span>
+                </button>
               </div>
             </aside>
 
@@ -2502,7 +2504,17 @@ function App() {
                 <>
                   <header className="codex-main-toolbar">
                     <div className="codex-main-title">
-                      <h2>{tr("detail.title")}</h2>
+                      <div className="detail-header-row">
+                        <h2>{tr("detail.title")}</h2>
+                        <label className="detail-live-toggle">
+                          <input
+                            type="checkbox"
+                            checked={showLiveTaskLogs}
+                            onChange={(e) => setShowLiveTaskLogs(e.target.checked)}
+                          />
+                          <span>{tr("detail.showLiveLogs")}</span>
+                        </label>
+                      </div>
                     </div>
                     <div className="codex-main-actions">
                       <button type="button" className="codex-action-button" onClick={closeTaskDetailModal}>
@@ -2510,12 +2522,6 @@ function App() {
                       </button>
                     </div>
                   </header>
-
-                  <div className="codex-main-meta">
-                    <span>{tr("detail.title")}</span>
-                    <span>{selectedDetailTask?.ID?.slice(0, 8) || tr("common.dash")}</span>
-                    <span>{statusText[selectedDetailTask?.Status || "pending"] || selectedDetailTask?.Status || tr("common.dash")}</span>
-                  </div>
 
                   {selectedDetailTask ? (
                     <div className="codex-task-list codex-task-list-single">
@@ -2794,6 +2800,12 @@ function App() {
                         {settingsFormError}
                       </p>
                     )}
+
+                    <div className="settings-language-block">
+                      <GlobeIcon className="home-topbar-inline-icon" />
+                      {renderLanguageSwitcher("settings")}
+                    </div>
+
                     <label className="checkbox-row" htmlFor="telegram-enabled">
                       <input
                         id="telegram-enabled"
@@ -2855,6 +2867,21 @@ function App() {
                       placeholder={tr("settings.proxyPlaceholder")}
                     />
 
+                    <label htmlFor="system-notification-mode">{tr("settings.systemNotificationMode")}</label>
+                    <select
+                      id="system-notification-mode"
+                      value={systemNotificationMode}
+                      onChange={(e) => {
+                        setSystemNotificationMode(normalizeSystemNotificationMode(e.target.value));
+                        setSettingsFormError("");
+                      }}
+                    >
+                      <option value="always">{tr("settings.systemNotificationModeAlways")}</option>
+                      <option value="when_unfocused">{tr("settings.systemNotificationModeWhenUnfocused")}</option>
+                      <option value="never">{tr("settings.systemNotificationModeNever")}</option>
+                    </select>
+                    <p className="run-info">{tr("settings.systemNotificationModeHint")}</p>
+
                     <label htmlFor="system-prompt">{tr("settings.systemPrompt")}</label>
                     <textarea
                       id="system-prompt"
@@ -2897,10 +2924,11 @@ function App() {
                       <button
                         type="button"
                         className="codex-action-button"
-                        onClick={() => setPage("project")}
+                        onClick={openTaskModal}
                         disabled={!selectedProjectID}
                       >
-                        {tr("home.projectDetail")}
+                        <TaskIcon className="home-topbar-button-icon" />
+                        <span>{tr("home.newTask")}</span>
                       </button>
                     </div>
                   </header>
@@ -2924,11 +2952,6 @@ function App() {
                         {tr("home.completedTasks", { count: groupedTasks.completed.length })}
                       </button>
                     </div>
-                    <p className="codex-main-status">
-                      <CheckCircleIcon className="dispatch-status-icon" />
-                      <span>{dispatchStatusText}</span>
-                    </p>
-
                     {loading ? (
                       <p className="empty empty-state">{tr("home.loadingTasks")}</p>
                     ) : tasks.length === 0 ? (
@@ -3101,7 +3124,7 @@ function App() {
             </div>
           )}
         </main>
-      )}
+
       {pendingDeleteProject && (
         <div className="modal-mask" onClick={closeDeleteProjectConfirm}>
           <div

@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"auto-work/internal/domain"
 	"auto-work/internal/repository"
 )
@@ -72,7 +70,6 @@ func (s *Service) Create(ctx context.Context, in CreateTaskInput) (*domain.Task,
 
 	now := time.Now().UTC()
 	t := &domain.Task{
-		ID:          uuid.NewString(),
 		ProjectID:   projectID,
 		Title:       title,
 		Description: description,

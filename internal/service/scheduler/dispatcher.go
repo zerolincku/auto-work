@@ -8,9 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"auto-work/internal/domain"
+	"auto-work/internal/repository"
 )
 
 var ErrNoRunnableTask = errors.New("no runnable task")
@@ -25,6 +24,7 @@ type Dispatcher struct {
 
 	mu              sync.RWMutex
 	runFinishedHook RunFinishedHook
+	hookWG          sync.WaitGroup
 }
 
 func NewDispatcher(db *sql.DB) *Dispatcher {
@@ -49,6 +49,10 @@ func (d *Dispatcher) SetRunFinishedHook(hook RunFinishedHook) {
 	d.mu.Unlock()
 }
 
+func (d *Dispatcher) WaitRunFinishedHooks() {
+	d.hookWG.Wait()
+}
+
 func (d *Dispatcher) ClaimNextTaskForAgent(ctx context.Context, agentID, provider, projectID, promptSnapshot string) (*domain.Task, *domain.Run, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
@@ -64,9 +68,9 @@ func (d *Dispatcher) ClaimNextTaskForAgent(ctx context.Context, agentID, provide
 		}
 	}()
 
-	if busy, err := agentHasRunningRun(ctx, tx, agentID); err != nil {
+	if allowed, err := agentCanClaimTask(ctx, tx, agentID); err != nil {
 		return nil, nil, err
-	} else if busy {
+	} else if !allowed {
 		return nil, nil, ErrNoRunnableTask
 	}
 
@@ -81,6 +85,13 @@ func (d *Dispatcher) ClaimNextTaskForAgent(ctx context.Context, agentID, provide
 			return nil, nil, err
 		}
 		if !allowed {
+			continue
+		}
+		samePriorityBatch, err := taskMatchesRunningPriorityBatch(ctx, tx, task)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !samePriorityBatch {
 			continue
 		}
 
@@ -124,9 +135,9 @@ func (d *Dispatcher) ClaimTaskForAgent(ctx context.Context, agentID, provider, t
 		}
 	}()
 
-	if busy, err := agentHasRunningRun(ctx, tx, agentID); err != nil {
+	if allowed, err := agentCanClaimTask(ctx, tx, agentID); err != nil {
 		return nil, nil, err
-	} else if busy {
+	} else if !allowed {
 		return nil, nil, ErrNoRunnableTask
 	}
 
@@ -145,6 +156,13 @@ func (d *Dispatcher) ClaimTaskForAgent(ctx context.Context, agentID, provider, t
 		return nil, nil, err
 	}
 	if !allowed {
+		return nil, nil, ErrNoRunnableTask
+	}
+	samePriorityBatch, err := taskMatchesRunningPriorityBatch(ctx, tx, *task)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !samePriorityBatch {
 		return nil, nil, ErrNoRunnableTask
 	}
 
@@ -244,7 +262,11 @@ WHERE id = ?`, taskStatus, now, taskID); err != nil {
 			Details:    details,
 			ExitCode:   exitCode,
 		}
-		go hook(context.Background(), event)
+		d.hookWG.Add(1)
+		go func() {
+			defer d.hookWG.Done()
+			hook(context.Background(), event)
+		}()
 	}
 	return nil
 }
@@ -279,7 +301,6 @@ WHERE id = ? AND status = 'pending'`, strings.ToLower(strings.TrimSpace(provider
 
 	now := time.Now().UTC()
 	run := &domain.Run{
-		ID:             uuid.NewString(),
 		TaskID:         task.ID,
 		AgentID:        agentID,
 		Attempt:        1,
@@ -292,6 +313,11 @@ WHERE id = ? AND status = 'pending'`, strings.ToLower(strings.TrimSpace(provider
 	if nextAttempt, nextErr := nextRunAttempt(ctx, tx, task.ID); nextErr == nil && nextAttempt > 0 {
 		run.Attempt = nextAttempt
 	}
+	runID, err := repository.NextIDTx(ctx, tx, "runs")
+	if err != nil {
+		return nil, err
+	}
+	run.ID = runID
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO runs (
   id, task_id, agent_id, attempt, status, started_at, prompt_snapshot, created_at, updated_at
@@ -342,13 +368,77 @@ func retryBackoff(retryCount int) time.Duration {
 	return delay
 }
 
-func agentHasRunningRun(ctx context.Context, tx *sql.Tx, agentID string) (bool, error) {
+func agentCanClaimTask(ctx context.Context, tx *sql.Tx, agentID string) (bool, error) {
+	concurrency, err := agentConcurrency(ctx, tx, agentID)
+	if err != nil {
+		return false, err
+	}
+	runningCount, err := runningRunCountByAgent(ctx, tx, agentID)
+	if err != nil {
+		return false, err
+	}
+	return runningCount < concurrency, nil
+}
+
+func agentConcurrency(ctx context.Context, tx *sql.Tx, agentID string) (int, error) {
+	row := tx.QueryRowContext(ctx, `SELECT concurrency FROM agents WHERE id = ?`, agentID)
+	var concurrency int
+	if err := row.Scan(&concurrency); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 1, nil
+		}
+		return 0, err
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	return concurrency, nil
+}
+
+func runningRunCountByAgent(ctx context.Context, tx *sql.Tx, agentID string) (int, error) {
 	row := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM runs WHERE agent_id = ? AND status = 'running'`, agentID)
 	var c int
 	if err := row.Scan(&c); err != nil {
+		return 0, err
+	}
+	return c, nil
+}
+
+func taskMatchesRunningPriorityBatch(ctx context.Context, tx *sql.Tx, task domain.Task) (bool, error) {
+	priority, hasRunning, err := runningPriorityForProject(ctx, tx, task.ProjectID)
+	if err != nil {
 		return false, err
 	}
-	return c > 0, nil
+	if !hasRunning {
+		return true, nil
+	}
+	return task.Priority == priority, nil
+}
+
+func runningPriorityForProject(ctx context.Context, tx *sql.Tx, projectID string) (int, bool, error) {
+	projectID = strings.TrimSpace(projectID)
+	var row *sql.Row
+	if projectID == "" {
+		row = tx.QueryRowContext(ctx, `
+SELECT MIN(t.priority)
+FROM tasks t
+JOIN runs r ON r.task_id = t.id
+WHERE r.status = 'running' AND t.project_id IS NULL`)
+	} else {
+		row = tx.QueryRowContext(ctx, `
+SELECT MIN(t.priority)
+FROM tasks t
+JOIN runs r ON r.task_id = t.id
+WHERE r.status = 'running' AND t.project_id = ?`, projectID)
+	}
+	var priority sql.NullInt64
+	if err := row.Scan(&priority); err != nil {
+		return 0, false, err
+	}
+	if !priority.Valid {
+		return 0, false, nil
+	}
+	return int(priority.Int64), true, nil
 }
 
 func listPendingTasks(ctx context.Context, tx *sql.Tx, provider, projectID string, limit int) ([]domain.Task, error) {

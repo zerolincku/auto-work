@@ -27,30 +27,55 @@ func (a *App) startAutoDispatchLoop() {
 			case <-loopCtx.Done():
 				return
 			case <-ticker.C:
-				_ = a.recoverDeadRunningRuns(context.Background(), "recovered dead running run during auto-dispatch loop")
-				projectIDs, err := a.projectRepo.ListAutoDispatchEnabledProjectIDs(context.Background(), 50)
-				if err != nil || len(projectIDs) == 0 {
-					continue
-				}
-				for _, projectID := range projectIDs {
-					resp, dispatchErr := a.DispatchOnce(context.Background(), "", projectID)
-					if dispatchErr != nil {
-						continue
-					}
-					if resp != nil && resp.Claimed {
-						break
-					}
-				}
+				a.runAutoDispatchCycle(context.Background())
 			}
 		}
 	}()
+}
+
+const autoDispatchProjectBurstLimit = 16
+
+func (a *App) runAutoDispatchCycle(ctx context.Context) {
+	_ = a.recoverDeadRunningRuns(ctx, "recovered dead running run during auto-dispatch loop")
+	projectIDs, err := a.projectRepo.ListAutoDispatchEnabledProjectIDs(ctx, 50)
+	if err != nil || len(projectIDs) == 0 {
+		return
+	}
+	for _, projectID := range projectIDs {
+		claimed := a.dispatchProjectAvailableTasks(ctx, projectID, autoDispatchProjectBurstLimit)
+		if claimed > 0 {
+			a.log.Infof("auto-dispatch claimed %d task(s) for project_id=%s", claimed, strings.TrimSpace(projectID))
+		}
+	}
+}
+
+func (a *App) dispatchProjectAvailableTasks(ctx context.Context, projectID string, limit int) int {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return 0
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	claimed := 0
+	for i := 0; i < limit; i++ {
+		resp, dispatchErr := a.DispatchOnce(ctx, "", projectID)
+		if dispatchErr != nil {
+			return claimed
+		}
+		if resp == nil || !resp.Claimed {
+			return claimed
+		}
+		claimed++
+	}
+	return claimed
 }
 
 func (a *App) triggerAutoDispatch(projectID string) {
 	if strings.TrimSpace(projectID) == "" {
 		return
 	}
-	_, _ = a.DispatchOnce(context.Background(), "", strings.TrimSpace(projectID))
+	_ = a.dispatchProjectAvailableTasks(context.Background(), strings.TrimSpace(projectID), autoDispatchProjectBurstLimit)
 }
 
 func (a *App) recoverDeadRunningRuns(ctx context.Context, reason string) error {

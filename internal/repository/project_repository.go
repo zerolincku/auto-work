@@ -24,6 +24,13 @@ func NewProjectRepository(db *sql.DB) *ProjectRepository {
 
 func (r *ProjectRepository) Create(ctx context.Context, p *domain.Project) error {
 	now := time.Now().UTC()
+	if strings.TrimSpace(p.ID) == "" {
+		id, err := NextID(ctx, r.db, "projects")
+		if err != nil {
+			return err
+		}
+		p.ID = id
+	}
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = now
 	}

@@ -323,6 +323,9 @@ func TestApp_GlobalSettingsCRUD(t *testing.T) {
 	if current.TelegramPollTimeout != 30 {
 		t.Fatalf("expected default poll timeout=30, got %d", current.TelegramPollTimeout)
 	}
+	if current.SystemNotificationMode != "always" {
+		t.Fatalf("expected default system notification mode=always, got %q", current.SystemNotificationMode)
+	}
 	if current.SystemPrompt != systemprompt.DefaultGlobalSystemPromptTemplate {
 		t.Fatalf("unexpected default system prompt: %q", current.SystemPrompt)
 	}
@@ -336,12 +339,13 @@ func TestApp_GlobalSettingsCRUD(t *testing.T) {
 	}
 
 	updated, err := application.UpdateGlobalSettings(ctx, app.UpdateGlobalSettingsRequest{
-		TelegramEnabled:     false,
-		TelegramBotToken:    "token-1",
-		TelegramChatIDs:     "1001,1002, 1001",
-		TelegramPollTimeout: 50,
-		TelegramProxyURL:    "http://127.0.0.1:7890",
-		SystemPrompt:        "你是一个严谨的软件工程师。\n请先阅读代码再修改。",
+		TelegramEnabled:        false,
+		TelegramBotToken:       "token-1",
+		TelegramChatIDs:        "1001,1002, 1001",
+		TelegramPollTimeout:    50,
+		TelegramProxyURL:       "http://127.0.0.1:7890",
+		SystemNotificationMode: "never",
+		SystemPrompt:           "你是一个严谨的软件工程师。\n请先阅读代码再修改。",
 	})
 	if err != nil {
 		t.Fatalf("update global settings: %v", err)
@@ -355,6 +359,9 @@ func TestApp_GlobalSettingsCRUD(t *testing.T) {
 	if updated.TelegramProxyURL != "http://127.0.0.1:7890" {
 		t.Fatalf("unexpected proxy url: %s", updated.TelegramProxyURL)
 	}
+	if updated.SystemNotificationMode != "never" {
+		t.Fatalf("unexpected system notification mode: %q", updated.SystemNotificationMode)
+	}
 	if updated.SystemPrompt != defaultPrompt {
 		t.Fatalf("unexpected system prompt: %q", updated.SystemPrompt)
 	}
@@ -365,6 +372,9 @@ func TestApp_GlobalSettingsCRUD(t *testing.T) {
 	}
 	if persisted.SystemPrompt != defaultPrompt {
 		t.Fatalf("unexpected persisted system prompt: %q", persisted.SystemPrompt)
+	}
+	if persisted.SystemNotificationMode != "never" {
+		t.Fatalf("unexpected persisted system notification mode: %q", persisted.SystemNotificationMode)
 	}
 }
 
@@ -493,7 +503,7 @@ func TestApp_UpdateProjectAndDeleteWithRelatedData(t *testing.T) {
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,finished_at,prompt_snapshot,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		"run-delete", task.ID, "agent-claude-default", 1, "done", now.Add(-time.Minute), now.Add(-30*time.Second), "prompt", now.Add(-time.Minute), now.Add(-30*time.Second)); err != nil {
+		"run-delete", task.ID, "1", 1, "done", now.Add(-time.Minute), now.Add(-30*time.Second), "prompt", now.Add(-time.Minute), now.Add(-30*time.Second)); err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
 	if _, err := rawDB.ExecContext(ctx, `
@@ -735,7 +745,7 @@ func TestApp_GetTaskLatestRun_WithNullOptionalFields(t *testing.T) {
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?)`,
-		"r-null", task.ID, "agent-claude-default", 1, "failed", now, "prompt", now, now); err != nil {
+		"r-null", task.ID, "1", 1, "failed", now, "prompt", now, now); err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
 
@@ -793,13 +803,13 @@ func TestApp_GetTaskDetail_WithRunHistory(t *testing.T) {
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,finished_at,prompt_snapshot,result_summary,result_details,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"run-1", task.ID, "agent-claude-default", 1, "failed", now.Add(-2*time.Minute), now.Add(-90*time.Second), "prompt1", "failed 1", "detail 1", now.Add(-2*time.Minute), now.Add(-90*time.Second)); err != nil {
+		"run-1", task.ID, "1", 1, "failed", now.Add(-2*time.Minute), now.Add(-90*time.Second), "prompt1", "failed 1", "detail 1", now.Add(-2*time.Minute), now.Add(-90*time.Second)); err != nil {
 		t.Fatalf("insert run1: %v", err)
 	}
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-2", task.ID, "agent-claude-default", 2, "running", now.Add(-30*time.Second), "prompt2", now.Add(-30*time.Second), now.Add(-30*time.Second)); err != nil {
+		"run-2", task.ID, "1", 2, "running", now.Add(-30*time.Second), "prompt2", now.Add(-30*time.Second), now.Add(-30*time.Second)); err != nil {
 		t.Fatalf("insert run2: %v", err)
 	}
 
@@ -879,13 +889,13 @@ func TestApp_ListSystemLogs_FilterByProject(t *testing.T) {
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-a", taskA.ID, "agent-claude-default", 1, "done", now.Add(-3*time.Minute), "prompt-a", now.Add(-3*time.Minute), now.Add(-3*time.Minute)); err != nil {
+		"run-a", taskA.ID, "1", 1, "done", now.Add(-3*time.Minute), "prompt-a", now.Add(-3*time.Minute), now.Add(-3*time.Minute)); err != nil {
 		t.Fatalf("insert run-a: %v", err)
 	}
 	if _, err := rawDB.ExecContext(ctx, `
 INSERT INTO runs(id,task_id,agent_id,attempt,status,started_at,prompt_snapshot,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?)`,
-		"run-b", taskB.ID, "agent-claude-default", 1, "done", now.Add(-2*time.Minute), "prompt-b", now.Add(-2*time.Minute), now.Add(-2*time.Minute)); err != nil {
+		"run-b", taskB.ID, "1", 1, "done", now.Add(-2*time.Minute), "prompt-b", now.Add(-2*time.Minute), now.Add(-2*time.Minute)); err != nil {
 		t.Fatalf("insert run-b: %v", err)
 	}
 
@@ -1106,6 +1116,139 @@ func TestApp_DispatchOnce_ManualWorksWhenAutoRunDisabled(t *testing.T) {
 	}
 }
 
+func TestApp_DispatchOnce_EmitsFrontendRunStartedNotification(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	projectPath := t.TempDir()
+
+	application, err := app.New(ctx, config.Config{
+		DatabasePath:        filepath.Join(t.TempDir(), "test.db"),
+		ClaudeBinary:        "/bin/echo",
+		RunClaudeOnDispatch: true,
+		WorkspacePath:       projectPath,
+		RequireMCPCallback:  false,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	events := make(chan app.FrontendRunNotification, 8)
+	application.SetFrontendRunReporter(func(event app.FrontendRunNotification) {
+		events <- event
+	})
+
+	project, err := application.CreateProject(ctx, app.CreateProjectRequest{
+		Name: "项目通知开始",
+		Path: projectPath,
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := application.CreateTask(ctx, app.CreateTaskRequest{
+		ProjectID:   project.ID,
+		Title:       "Task Notify Started",
+		Description: "Desc",
+		Provider:    "claude",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	resp, err := application.DispatchOnce(ctx, "", project.ID)
+	if err != nil {
+		t.Fatalf("dispatch once: %v", err)
+	}
+	if !resp.Claimed || resp.RunID == "" {
+		t.Fatalf("expected claimed dispatch, got %+v", resp)
+	}
+
+	event := waitForFrontendRunNotification(t, events, func(item app.FrontendRunNotification) bool {
+		return item.Kind == "started"
+	})
+	if event.ProjectID != project.ID || event.ProjectName != project.Name {
+		t.Fatalf("unexpected project payload: %+v", event)
+	}
+	if event.TaskID != task.ID || event.TaskTitle != task.Title {
+		t.Fatalf("unexpected task payload: %+v", event)
+	}
+	if event.RunID != resp.RunID {
+		t.Fatalf("unexpected run id: %+v", event)
+	}
+	if event.Status != "running" || event.RunStatus != "running" {
+		t.Fatalf("unexpected status payload: %+v", event)
+	}
+	if event.Provider != "claude" {
+		t.Fatalf("unexpected provider payload: %+v", event)
+	}
+	waitForTaskToLeaveRunning(t, application, task.ID)
+}
+
+func TestApp_DispatchOnce_StartFailureEmitsFrontendRunFinishedNotification(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	projectPath := t.TempDir()
+
+	application, err := app.New(ctx, config.Config{
+		DatabasePath:        filepath.Join(t.TempDir(), "test.db"),
+		ClaudeBinary:        filepath.Join(projectPath, "missing-claude"),
+		RunClaudeOnDispatch: true,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	events := make(chan app.FrontendRunNotification, 8)
+	application.SetFrontendRunReporter(func(event app.FrontendRunNotification) {
+		events <- event
+	})
+
+	project, err := application.CreateProject(ctx, app.CreateProjectRequest{
+		Name: "项目通知失败",
+		Path: projectPath,
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := application.CreateTask(ctx, app.CreateTaskRequest{
+		ProjectID:   project.ID,
+		Title:       "Task Notify Failed",
+		Description: "Desc",
+		Provider:    "claude",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	resp, err := application.DispatchOnce(ctx, "", project.ID)
+	if err != nil {
+		t.Fatalf("dispatch once: %v", err)
+	}
+	if !resp.Claimed || resp.RunID == "" {
+		t.Fatalf("expected claimed dispatch, got %+v", resp)
+	}
+
+	event := waitForFrontendRunNotification(t, events, func(item app.FrontendRunNotification) bool {
+		return item.Kind == "finished" && item.RunID == resp.RunID
+	})
+	if event.ProjectID != project.ID || event.ProjectName != project.Name {
+		t.Fatalf("unexpected project payload: %+v", event)
+	}
+	if event.TaskID != task.ID || event.TaskTitle != task.Title {
+		t.Fatalf("unexpected task payload: %+v", event)
+	}
+	if event.Status != "failed" || event.RunStatus != "failed" {
+		t.Fatalf("unexpected status payload: %+v", event)
+	}
+	if event.Provider != "claude" {
+		t.Fatalf("unexpected provider payload: %+v", event)
+	}
+	if !strings.Contains(event.Summary, "start failed") {
+		t.Fatalf("unexpected summary payload: %+v", event)
+	}
+}
+
 func TestApp_DispatchTask_ClaimsSpecifiedTask(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1168,6 +1311,38 @@ func TestApp_DispatchTask_ClaimsSpecifiedTask(t *testing.T) {
 	if firstTask.Task.Status != "pending" {
 		t.Fatalf("expected first task still pending, got %s", firstTask.Task.Status)
 	}
+}
+
+func waitForFrontendRunNotification(t *testing.T, events <-chan app.FrontendRunNotification, match func(app.FrontendRunNotification) bool) app.FrontendRunNotification {
+	t.Helper()
+
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case event := <-events:
+			if match(event) {
+				return event
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for frontend run notification")
+		}
+	}
+}
+
+func waitForTaskToLeaveRunning(t *testing.T, application *app.App, taskID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		detail, err := application.GetTaskDetail(context.Background(), taskID)
+		if err == nil && detail != nil && detail.Task.Status != "running" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task %s to leave running state", taskID)
 }
 
 func TestApp_DispatchTask_UsesProjectProviderInsteadOfTaskProvider(t *testing.T) {

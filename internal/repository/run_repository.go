@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"auto-work/internal/domain"
@@ -33,6 +34,13 @@ func NewRunRepository(db *sql.DB) *RunRepository {
 
 func (r *RunRepository) Create(ctx context.Context, run *domain.Run) error {
 	now := time.Now().UTC()
+	if strings.TrimSpace(run.ID) == "" {
+		id, err := NextID(ctx, r.db, "runs")
+		if err != nil {
+			return err
+		}
+		run.ID = id
+	}
 	if run.CreatedAt.IsZero() {
 		run.CreatedAt = now
 	}

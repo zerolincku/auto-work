@@ -436,6 +436,102 @@ func TestDispatcher_BlockFailurePolicy_BlocksPendingTasksUntilRetryRuns(t *testi
 	}
 }
 
+func TestDispatcher_AllowsConcurrentClaimsOnlyForSamePriorityWithinProject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	sqlDB := setupDB(t)
+	taskRepo := repository.NewTaskRepository(sqlDB)
+	projectRepo := repository.NewProjectRepository(sqlDB)
+	agentRepo := repository.NewAgentRepository(sqlDB)
+	dispatcher := scheduler.NewDispatcher(sqlDB)
+
+	project := &domain.Project{
+		ID:              "project-concurrent-priority",
+		Name:            "concurrent-priority-project",
+		Path:            t.TempDir(),
+		DefaultProvider: "claude",
+		FailurePolicy:   domain.ProjectFailurePolicyBlock,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := projectRepo.Create(ctx, project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	agent := &domain.Agent{
+		ID:          "agent-concurrent-priority",
+		Name:        "concurrent-priority-agent",
+		Provider:    "claude",
+		Enabled:     true,
+		Concurrency: 2,
+	}
+	if err := agentRepo.Upsert(ctx, agent); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+
+	first := newTask("task-concurrent-1", "first", 100)
+	first.ProjectID = project.ID
+	second := newTask("task-concurrent-2", "second", 100)
+	second.ProjectID = project.ID
+	third := newTask("task-concurrent-3", "third", 200)
+	third.ProjectID = project.ID
+	second.CreatedAt = first.CreatedAt.Add(time.Second)
+	second.UpdatedAt = second.CreatedAt
+	third.CreatedAt = second.CreatedAt.Add(time.Second)
+	third.UpdatedAt = third.CreatedAt
+	if err := taskRepo.Create(ctx, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if err := taskRepo.Create(ctx, second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if err := taskRepo.Create(ctx, third); err != nil {
+		t.Fatalf("create third: %v", err)
+	}
+
+	claimed1, run1, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-concurrent-1")
+	if err != nil {
+		t.Fatalf("claim first: %v", err)
+	}
+	if claimed1.ID != first.ID {
+		t.Fatalf("expected first task, got %s", claimed1.ID)
+	}
+
+	claimed2, run2, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-concurrent-2")
+	if err != nil {
+		t.Fatalf("claim second same-priority task: %v", err)
+	}
+	if claimed2.ID != second.ID {
+		t.Fatalf("expected second task, got %s", claimed2.ID)
+	}
+
+	if _, _, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-concurrent-3"); !errors.Is(err, scheduler.ErrNoRunnableTask) {
+		t.Fatalf("expected no runnable task while concurrency full, got %v", err)
+	}
+
+	exitCode := 0
+	if err := dispatcher.MarkRunFinished(ctx, run1.ID, domain.RunDone, domain.TaskDone, "ok", "done", &exitCode); err != nil {
+		t.Fatalf("finish first run: %v", err)
+	}
+
+	if _, _, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-concurrent-4"); !errors.Is(err, scheduler.ErrNoRunnableTask) {
+		t.Fatalf("expected lower-priority task blocked until same-priority batch completes, got %v", err)
+	}
+
+	if err := dispatcher.MarkRunFinished(ctx, run2.ID, domain.RunDone, domain.TaskDone, "ok", "done", &exitCode); err != nil {
+		t.Fatalf("finish second run: %v", err)
+	}
+
+	claimed3, _, err := dispatcher.ClaimNextTaskForAgent(ctx, agent.ID, "claude", project.ID, "prompt-concurrent-5")
+	if err != nil {
+		t.Fatalf("claim third task after first batch finished: %v", err)
+	}
+	if claimed3.ID != third.ID {
+		t.Fatalf("expected third task after first batch, got %s", claimed3.ID)
+	}
+}
+
 func TestDispatcher_ContinueFailurePolicy_AllowsFollowUpDispatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

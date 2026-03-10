@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type RunEventRepository struct {
@@ -19,12 +17,29 @@ func NewRunEventRepository(db *sql.DB) *RunEventRepository {
 }
 
 func (r *RunEventRepository) Append(ctx context.Context, runID, kind, payload string) error {
-	_, err := r.db.ExecContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	id, err := NextIDTx(ctx, tx, "run_events")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO run_events(id, run_id, ts, kind, payload)
 VALUES (?, ?, ?, ?, ?)`,
-		uuid.NewString(), runID, time.Now().UTC(), kind, payload,
+		id, runID, time.Now().UTC(), kind, payload,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type RunEventRecord struct {

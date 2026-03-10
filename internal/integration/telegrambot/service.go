@@ -13,7 +13,6 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/google/uuid"
 
 	"auto-work/internal/domain"
 	"auto-work/internal/repository"
@@ -873,7 +872,6 @@ func (s *Service) handleCreateTask(ctx context.Context, args string) string {
 	}
 	now := time.Now().UTC()
 	task := &domain.Task{
-		ID:          uuid.NewString(),
 		ProjectID:   project.ID,
 		Title:       title,
 		Description: desc,

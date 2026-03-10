@@ -123,9 +123,11 @@ func (r *Runner) Start(ctx context.Context, run domain.Run, task domain.Task, ag
 	}
 	r.mu.Unlock()
 
-	go r.consumeOutput(run.ID, "stdout", stdout)
-	go r.consumeOutput(run.ID, "stderr", stderr)
-	go r.waitExit(run.ID, cmd)
+	var outputWG sync.WaitGroup
+	outputWG.Add(2)
+	go r.consumeOutput(run.ID, "stdout", stdout, &outputWG)
+	go r.consumeOutput(run.ID, "stderr", stderr, &outputWG)
+	go r.waitExit(run.ID, cmd, &outputWG)
 
 	return cmd.Process.Pid, nil
 }
@@ -174,7 +176,10 @@ func (r *Runner) Probe(ctx context.Context, runID string) (runner.RunHealth, err
 	}, nil
 }
 
-func (r *Runner) consumeOutput(runID, stream string, reader io.ReadCloser) {
+func (r *Runner) consumeOutput(runID, stream string, reader io.ReadCloser, wg *sync.WaitGroup) {
+	if wg != nil {
+		defer wg.Done()
+	}
 	defer reader.Close()
 
 	const readBufSize = 32 * 1024
@@ -225,11 +230,14 @@ func (r *Runner) consumeOutput(runID, stream string, reader io.ReadCloser) {
 	}
 }
 
-func (r *Runner) waitExit(runID string, cmd *exec.Cmd) {
+func (r *Runner) waitExit(runID string, cmd *exec.Cmd, outputWG *sync.WaitGroup) {
 	err := cmd.Wait()
 	exitCode := -1
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
+	}
+	if outputWG != nil {
+		outputWG.Wait()
 	}
 
 	r.mu.Lock()

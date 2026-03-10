@@ -56,6 +56,20 @@ type DispatchResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+type FrontendRunNotification struct {
+	Kind        string `json:"kind"`
+	ProjectID   string `json:"project_id,omitempty"`
+	ProjectName string `json:"project_name,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
+	TaskTitle   string `json:"task_title,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	Status      string `json:"status,omitempty"`
+	RunStatus   string `json:"run_status,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Attempt     int    `json:"attempt,omitempty"`
+}
+
 type FinishRunRequest struct {
 	RunID      string `json:"run_id"`
 	Status     string `json:"status"`
@@ -132,20 +146,22 @@ type MCPStatusView struct {
 }
 
 type GlobalSettingsView struct {
-	TelegramEnabled     bool      `json:"telegram_enabled"`
-	TelegramBotToken    string    `json:"telegram_bot_token"`
-	TelegramChatIDs     string    `json:"telegram_chat_ids"`
-	TelegramPollTimeout int       `json:"telegram_poll_timeout"`
-	TelegramProxyURL    string    `json:"telegram_proxy_url"`
-	SystemPrompt        string    `json:"system_prompt"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	TelegramEnabled        bool      `json:"telegram_enabled"`
+	TelegramBotToken       string    `json:"telegram_bot_token"`
+	TelegramChatIDs        string    `json:"telegram_chat_ids"`
+	TelegramPollTimeout    int       `json:"telegram_poll_timeout"`
+	TelegramProxyURL       string    `json:"telegram_proxy_url"`
+	SystemNotificationMode string    `json:"system_notification_mode"`
+	SystemPrompt           string    `json:"system_prompt"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type UpdateGlobalSettingsRequest struct {
-	TelegramEnabled     bool   `json:"telegram_enabled"`
-	TelegramBotToken    string `json:"telegram_bot_token"`
-	TelegramChatIDs     string `json:"telegram_chat_ids"`
-	TelegramPollTimeout int    `json:"telegram_poll_timeout"`
-	TelegramProxyURL    string `json:"telegram_proxy_url"`
-	SystemPrompt        string `json:"system_prompt"`
+	TelegramEnabled        bool   `json:"telegram_enabled"`
+	TelegramBotToken       string `json:"telegram_bot_token"`
+	TelegramChatIDs        string `json:"telegram_chat_ids"`
+	TelegramPollTimeout    int    `json:"telegram_poll_timeout"`
+	TelegramProxyURL       string `json:"telegram_proxy_url"`
+	SystemNotificationMode string `json:"system_notification_mode"`
+	SystemPrompt           string `json:"system_prompt"`
 }

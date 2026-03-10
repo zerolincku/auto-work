@@ -37,6 +37,10 @@ func (a *App) UpdateGlobalSettings(req coreapp.UpdateGlobalSettingsRequest) (*co
 	return backend.UpdateGlobalSettings(a.ctx, req)
 }
 
+func (a *App) ShowSystemNotification(title, body string) error {
+	return a.showSystemNotification(title, body)
+}
+
 func (a *App) AutoRunEnabled(projectID string) bool {
 	backend, err := a.backendOrErr()
 	if err != nil {

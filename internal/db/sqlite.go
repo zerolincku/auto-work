@@ -14,17 +14,16 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", path)
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)",
+		path,
+	)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err = db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if _, err = db.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
+	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
