@@ -1,185 +1,193 @@
 # auto-work
 
-`auto-work` 是一个本地优先的 AI 任务编排桌面应用，帮助你把“给 Claude / Codex 派活、看执行过程、收结果、补后续任务”这套流程统一到一个工作台里。
+English | [简体中文](./README-zh.md)
 
-它基于 `Go + Wails + React + SQLite` 构建，适合管理多个代码仓库中的开发任务：你可以为每个项目维护任务队列，选择默认 Provider，控制自动派发策略，并通过内置 MCP 回调让 AI 在任务执行完成后结构化回写结果、创建后续任务或更新任务状态。
+`auto-work` is a local-first AI task orchestration desktop app for turning "ask Claude/Codex to do work" into a structured workflow with projects, task queues, execution logs, MCP callbacks, and follow-up task management.
 
-## 适合什么场景
+Built with `Go + Wails + React + SQLite`, it is designed for people managing multiple code repositories locally. You can maintain per-project task queues, choose a default provider, control auto-dispatch behavior, and let AI write results back through the built-in MCP server after each run.
 
-- 同时维护多个代码仓库，希望统一管理 AI 开发任务
-- 希望把任务从“聊天式交互”切换成“队列式执行”
-- 希望任务完成后自动回写状态、保留运行日志和历史记录
-- 希望通过 Telegram 在移动端查看任务、创建任务、接收完成通知
-- 希望在本地运行，不依赖云端任务中心
+## When It Fits Well
 
-## 核心能力
+- You manage multiple code repositories and want one place for AI-driven task execution
+- You want to move from ad-hoc chat prompts to queue-based task orchestration
+- You want run history, status write-back, and logs for every task
+- You want Telegram notifications and basic task operations on mobile
+- You want everything to stay local instead of relying on a hosted task platform
 
-- 项目级任务看板：按项目管理任务、优先级、状态和运行历史
-- 双 Provider 支持：支持 `Claude` 和 `Codex`，可按项目设置默认执行器
-- 自动派发：空闲 agent 自动领取任务，也支持手动“派发一次”
-- 内置 MCP Server：同进程提供 `report_result/create_tasks/update_task/delete_task` 等工具
-- 结果可追踪：保留任务摘要、详细结果、运行事件和日志
-- Telegram 集成：支持通知、查询、创建任务、查看日志摘要
-- 项目级 AI 配置：支持项目默认模型、项目提示词、失败策略、截图上报
-- 本地持久化：数据保存在 SQLite，配置简单，迁移成本低
+## Core Features
 
-## 界面预览
+- Project-based task board for managing task status, priority, and run history
+- Dual provider support for `Claude` and `Codex`
+- Auto-dispatch for idle agents, plus manual one-click dispatch
+- Built-in MCP server with tools such as `report_result`, `create_tasks`, `update_task`, and `delete_task`
+- Traceable execution with summaries, details, run events, and logs
+- Telegram integration for notifications, task queries, and task creation
+- Project-level AI settings including model, prompt, failure policy, and screenshot reporting
+- Local persistence with SQLite
 
-### 任务列表
+## Documentation
 
-![任务列表](docs/任务列表.png)
+- English: [README.md](./README.md)
+- 简体中文: [README-zh.md](./README-zh.md)
 
-主界面按项目展示任务队列、运行控制和任务卡片，适合日常批量管理与派发。
+## Screenshots
 
-### 任务详情
+### Task List
 
-![任务详情](docs/任务详情.png)
+![Task list](docs/任务列表.png)
 
-任务详情页可以查看最近运行记录、结果摘要、详细说明，以及实时/历史日志。
+The home screen shows the current project's task queue, run controls, and task cards for everyday dispatch and monitoring.
 
-### 项目详情
+### Task Detail
 
-![项目详情](docs/项目详情.png)
+![Task detail](docs/任务详情.png)
 
-项目维度可以配置默认 Provider、模型、失败处理策略、项目提示词，以及前端截图上报能力。
+The detail page shows recent runs, summaries, full result details, and live or historical logs.
 
-### 全局配置
+### Project Detail
 
-![全局配置](docs/全局配置.png)
+![Project detail](docs/项目详情.png)
 
-全局设置页集中管理 Telegram Bot、系统通知和全局系统提示词。
+Each project can define its default provider, model, failure policy, project prompt, and screenshot reporting settings.
 
-### Telegram 指令
+### Global Settings
 
-![Telegram 指令](docs/telegram指令.png)
+![Global settings](docs/全局配置.png)
 
-启用 Telegram 后，可以直接在聊天窗口查询项目、创建任务、查看待办和运行状态。
+Global settings centralize Telegram configuration, system notifications, and the global system prompt.
 
-### Telegram 任务通知
+### Telegram Commands
 
-![Telegram 任务通知](docs/telegram任务通知.png)
+![Telegram commands](docs/telegram指令.png)
 
-任务开始、完成、失败或阻塞后，可以把结果摘要和截图地址推送到 Telegram。
+Once Telegram is enabled, you can query projects, create tasks, and inspect pending or running work directly from chat.
 
-## 技术栈
+### Telegram Task Notifications
 
-- 后端：Go 1.23、Wails v2、SQLite
-- 前端：React 18、TypeScript、Vite
-- 集成：Claude CLI、Codex CLI、Telegram Bot、MCP HTTP Server
+![Telegram task notifications](docs/telegram任务通知.png)
 
-## 快速开始
+Task started, completed, failed, or blocked events can be pushed to Telegram together with summaries and screenshot links.
 
-### 1. 准备依赖
+## Tech Stack
 
-请先确保本机已安装：
+- Backend: Go 1.23, Wails v2, SQLite
+- Frontend: React 18, TypeScript, Vite
+- Integrations: Claude CLI, Codex CLI, Telegram Bot, MCP HTTP Server
+
+## Quick Start
+
+### 1. Install Dependencies
+
+Make sure you have these installed:
 
 - Go `1.23+`
-- Node.js 与 npm
+- Node.js and npm
 - Wails CLI
-- 可选：`claude` CLI、`codex` CLI（需要真正执行 AI 任务时）
+- Optional: `claude` CLI and `codex` CLI if you want real AI task execution
 
-安装 Wails CLI：
+Install the Wails CLI:
 
 ```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```
 
-安装前端依赖：
+Install frontend dependencies:
 
 ```bash
 make frontend-install
 ```
 
-### 2. 启动开发模式
+### 2. Start in Development Mode
 
 ```bash
 make dev
 ```
 
-如果只想运行 Go 测试：
+Run Go tests only:
 
 ```bash
 make test
 ```
 
-如果要打包桌面应用：
+Build the desktop app:
 
 ```bash
 make build
 ```
 
-### 3. 首次使用流程
+### 3. First-Time Workflow
 
-1. 启动应用后先新建项目，填写项目名称和本地仓库路径
-2. 进入项目详情，设置默认 Provider、模型和失败策略
-3. 回到首页创建任务
-4. 选择手动“派发一次”，或开启“自动派发”
-5. 在任务详情页查看执行日志、结果摘要和历史记录
-6. 如需移动端通知，再去全局设置中配置 Telegram
+1. Start the app and create a project with a local repository path.
+2. Open project settings and choose the default provider, model, and failure policy.
+3. Create a task from the home screen.
+4. Dispatch it manually or enable auto-dispatch.
+5. Open task details to inspect logs, summaries, and run history.
+6. Configure Telegram later if you want mobile notifications.
 
-## 使用说明
+## Usage
 
-### 项目与任务管理
+### Projects and Tasks
 
-- 项目是任务的顶层容器，每个项目绑定一个本地仓库路径
-- 任务默认追加到项目队尾，也可以通过 MCP 在指定任务后插入
-- 支持任务编辑、删除、重试、手动标记完成
-- 任务状态覆盖 `pending / running / done / failed / blocked`
+- A project is the top-level container for tasks and is bound to a local repository path.
+- New tasks are appended to the end of the project's queue by default.
+- Tasks can also be inserted after another task through MCP.
+- Tasks support editing, deletion, retry, and manual completion.
+- Supported task states are `pending`, `running`, `done`, `failed`, and `blocked`.
 
-### Provider 与调度
+### Providers and Dispatch
 
-- 项目可以选择默认 Provider：`claude` 或 `codex`
-- 自动派发开启后，系统会持续检查当前项目并调度待执行任务
-- 手动派发适合临时执行单个任务或调试运行环境
-- 失败策略支持：
-  - `block`：出现失败任务后阻塞该项目后续调度
-  - `continue`：失败任务不阻塞其他待执行任务
+- Each project can choose a default provider: `claude` or `codex`.
+- When auto-dispatch is enabled, the scheduler keeps picking dispatchable tasks for that project.
+- Manual dispatch is useful for single-task execution or environment debugging.
+- Failure policies:
+  - `block`: stop later tasks in the same project after a failure
+  - `continue`: allow other pending tasks to continue even if one task fails
 
-### 运行结果与回写
+### Result Write-Back
 
-- 每次运行都会创建 run 记录，并保留事件流和关键日志
-- AI 完成任务后，会通过内置 MCP 工具 `auto-work.report_result` 回写最终状态
-- AI 还可以通过 MCP 继续创建后续任务、更新任务内容或删除无效任务
+- Every execution creates a run record with events and key logs.
+- When AI finishes a task, it is expected to call `auto-work.report_result` through the built-in MCP server.
+- AI can also create follow-up tasks, update existing tasks, or delete invalid ones through MCP.
 
-### Telegram 集成
+### Telegram Integration
 
-- 可接收任务开始、完成、失败、阻塞通知
-- 可通过 Telegram 直接查询项目、待办、最近任务和运行日志
-- 可通过 `/addtask` 在聊天中创建任务
+- Receive notifications for task start, completion, failure, and blocked states
+- Query projects, pending tasks, recent runs, and logs from Telegram
+- Create tasks from chat with `/addtask`
 
-详细配置见：
+See:
 
-- [Telegram Bot 配置指南](docs/04-telegram-bot-setup.md)
-- [Telegram 指令手册](docs/05-telegram-commands.md)
+- [Telegram Bot Setup Guide](docs/04-telegram-bot-setup.md)
+- [Telegram Command Reference](docs/05-telegram-commands.md)
 
-### 前端截图上报
+### Frontend Screenshot Reporting
 
-- 可在项目详情页开启“任务完成后开启截图上报”
-- 当任务涉及前端改动时，AI 会在结果详情中补充截图地址
-- Telegram 通知会优先发送截图地址，本地图片还会尝试作为图片消息发送
+- Enable "screenshot reporting after task completion" in project settings.
+- When a task modifies frontend-related files, AI can add screenshot links to the result details.
+- Telegram notifications will include screenshot links and may send local images directly when available.
 
-## 常用启动方式
+## Common Startup Modes
 
-### 默认启动
+### Default
 
 ```bash
 make dev
 ```
 
-### 指定数据库路径
+### Custom Database Path
 
 ```bash
 AUTO_WORK_DB_PATH=/abs/path/auto-work.db make dev
 ```
 
-### 关闭默认自动执行
+### Disable Default Auto Execution
 
 ```bash
 AUTO_WORK_RUN_CLAUDE_ON_DISPATCH=0 make dev
 AUTO_WORK_RUN_CODEX_ON_DISPATCH=0 make dev
 ```
 
-### 指定默认模型
+### Set Default Models
 
 ```bash
 AUTO_WORK_CLAUDE_MODEL=claude-sonnet-4-6 \
@@ -187,7 +195,7 @@ AUTO_WORK_CODEX_MODEL=gpt-5.3-codex \
 make dev
 ```
 
-### 开启并强制要求 MCP 回调
+### Enable and Require MCP Callback
 
 ```bash
 AUTO_WORK_ENABLE_MCP_CALLBACK=1 \
@@ -195,21 +203,21 @@ AUTO_WORK_REQUIRE_MCP_CALLBACK=1 \
 make dev
 ```
 
-### 指定 MCP HTTP 地址
+### Custom MCP HTTP URL
 
 ```bash
 AUTO_WORK_MCP_HTTP_URL=http://127.0.0.1:39123/mcp make dev
 ```
 
-说明：
+Notes:
 
-- 数据库默认路径为 `./data/auto-work.db`
-- 应用日志默认写入 `./data/log/auto-work.log`
-- 环境变量主要用于启动默认值，运行后也可以在界面中修改部分配置
+- The default database path is `./data/auto-work.db`
+- App logs are written to `./data/log/auto-work.log`
+- Environment variables mainly provide startup defaults; some settings can later be changed in the UI
 
-## MCP 能力
+## MCP Tools
 
-当前内置 MCP Server 由应用同进程启动，默认提供以下工具：
+The in-process MCP server currently exposes:
 
 - `auto-work.report_result`
 - `auto-work.create_tasks`
@@ -219,20 +227,24 @@ AUTO_WORK_MCP_HTTP_URL=http://127.0.0.1:39123/mcp make dev
 - `auto-work.list_history_tasks`
 - `auto-work.get_task_detail`
 
-如果你希望在终端里直接运行 Claude Code / Codex 时也能访问 `auto-work` MCP，可参考：
+If you want to access `auto-work` MCP from standalone Claude Code or Codex sessions in your terminal, see:
 
-- [MCP 配置与排障](docs/06-mcp-config.md)
+- [MCP Configuration and Troubleshooting](docs/06-mcp-config.md)
 
-## 仓库文档
+## Repository Docs
 
-- [架构设计](docs/01-architecture.md)
-- [开发计划](docs/02-dev-plan.md)
-- [MVP 验收](docs/03-mvp-acceptance.md)
-- [Telegram Bot 配置指南](docs/04-telegram-bot-setup.md)
-- [Telegram 指令手册](docs/05-telegram-commands.md)
-- [MCP 配置与排障](docs/06-mcp-config.md)
+Most files under `docs/` are currently written in Chinese.
 
-## 开发命令
+- [English README](./README.md)
+- [中文 README](./README-zh.md)
+- [Architecture](docs/01-architecture.md)
+- [Development Plan](docs/02-dev-plan.md)
+- [MVP Acceptance](docs/03-mvp-acceptance.md)
+- [Telegram Bot Setup Guide](docs/04-telegram-bot-setup.md)
+- [Telegram Command Reference](docs/05-telegram-commands.md)
+- [MCP Configuration and Troubleshooting](docs/06-mcp-config.md)
+
+## Development Commands
 
 ```bash
 make help
@@ -247,4 +259,4 @@ make build
 
 ## License
 
-如需开源发布，建议补充 `LICENSE` 文件后再发布到 GitHub。
+Add a `LICENSE` file before publishing the repository if you plan to open source it on GitHub.
